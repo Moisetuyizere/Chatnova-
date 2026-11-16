@@ -1,0 +1,2255 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatNova - Ultimate Multi-Device PWA Platform</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f5f3ff',
+                            100: '#ede9fe',
+                            500: '#8b5cf6',
+                            600: '#7c3aed',
+                            700: '#6d28d9',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- PWA Dynamic Manifest, Apple Touch Icon & Favicon -->
+    <link rel="manifest" id="pwa-manifest">
+    <link rel="icon" id="pwa-favicon" type="image/jpeg" href="320470.jpg">
+    <link rel="apple-touch-icon" id="pwa-apple-icon" href="320470.jpg">
+    <meta name="theme-color" content="#7c3aed">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="ChatNova">
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            70% { transform: scale(1.1); opacity: 0; }
+            100% { transform: scale(0.95); opacity: 0; }
+        }
+        .animate-pulse-ring { animation: pulse-ring 2s infinite; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-100 min-h-screen flex flex-col font-sans transition-colors duration-200">
+
+    <!-- Offline Status & Auto-Sync Banner -->
+    <div id="offline-banner" class="bg-amber-500 text-slate-950 font-semibold px-4 py-1.5 text-center text-xs hidden flex items-center justify-center gap-2 z-50">
+        <i class="fa-solid fa-triangle-exclamation"></i> Offline mode active. Actions are queued and will auto-sync upon reconnection.
+    </div>
+
+    <!-- APP CONTAINER -->
+    <div id="app" class="flex-1 flex flex-col">
+        <!-- Rendered dynamically -->
+    </div>
+
+    <!-- STORY VIEWER MODAL -->
+    <div id="story-viewer-modal" class="fixed inset-0 z-50 bg-black/95 hidden flex-col items-center justify-center p-4"></div>
+
+    <!-- REQUIRED FOOTER -->
+    <footer class="bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 py-3 px-4 text-center text-xs text-slate-500 dark:text-slate-400 mt-auto">
+        Designed by Moise TUYIZERE | Email: tmoise003@gmail.com | Phone: 0786171184
+    </footer>
+
+    <!-- TOAST NOTIFICATION CONTAINER -->
+    <div id="toast-container" class="fixed bottom-16 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- FIREBASE REAL-TIME CLOUD SYNC MODULE -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.cloudSync = {
+            enabled: false,
+            db: null,
+            auth: null,
+            appId: typeof __app_id !== 'undefined' ? __app_id : 'chatnova-global-v1',
+            async init() {
+                try {
+                    if (typeof __firebase_config === 'undefined' || !__firebase_config) {
+                        window.updateSyncBadge('Local Multi-Tab Sync');
+                        return;
+                    }
+                    const firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+                    const app = initializeApp(firebaseConfig);
+                    this.auth = getAuth(app);
+                    this.db = getFirestore(app);
+
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(this.auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(this.auth);
+                    }
+
+                    if (!this.auth.currentUser) return;
+                    this.enabled = true;
+                    window.updateSyncBadge('Global Cloud Live');
+                    this.bindRealtimeListeners();
+                    this.pushInitialSeedIfNeeded();
+                } catch (err) {
+                    console.warn("Cloud sync fallback active:", err);
+                    window.updateSyncBadge('Local Sync Mode');
+                }
+            },
+            colRef(name) {
+                return collection(this.db, 'artifacts', this.appId, 'public', 'data', name);
+            },
+            docRef(name, id) {
+                return doc(this.db, 'artifacts', this.appId, 'public', 'data', name, String(id));
+            },
+            async pushDoc(colName, id, data) {
+                if (!this.enabled || !this.auth?.currentUser) return;
+                try {
+                    await setDoc(this.docRef(colName, id), data, { merge: true });
+                } catch (e) {
+                    console.warn("Cloud write error:", e);
+                }
+            },
+            async removeDoc(colName, id) {
+                if (!this.enabled || !this.auth?.currentUser) return;
+                try {
+                    await deleteDoc(this.docRef(colName, id));
+                } catch (e) {
+                    console.warn("Cloud delete error:", e);
+                }
+            },
+            async pushInitialSeedIfNeeded() {
+                if (!this.enabled || !window.db) return;
+                for (const u of window.db.users) await this.pushDoc('users', u.id, u);
+                for (const p of window.db.posts) await this.pushDoc('posts', p.id, p);
+            },
+            bindRealtimeListeners() {
+                // Users listener
+                onSnapshot(this.colRef('users'), (snap) => {
+                    if (snap.empty) return;
+                    const cloudUsers = [];
+                    snap.forEach(d => cloudUsers.push(d.data()));
+                    if (cloudUsers.length > 0) {
+                        window.mergeCloudCollection('users', cloudUsers);
+                    }
+                }, (err) => console.warn(err));
+
+                // Posts listener
+                onSnapshot(this.colRef('posts'), (snap) => {
+                    const cloudPosts = [];
+                    snap.forEach(d => cloudPosts.push(d.data()));
+                    if (cloudPosts.length > 0) {
+                        cloudPosts.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                        window.mergeCloudCollection('posts', cloudPosts);
+                    }
+                }, (err) => console.warn(err));
+
+                // Messages listener
+                onSnapshot(this.colRef('messages'), (snap) => {
+                    const cloudMsgs = [];
+                    snap.forEach(d => cloudMsgs.push(d.data()));
+                    cloudMsgs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                    window.mergeCloudCollection('messages', cloudMsgs);
+                }, (err) => console.warn(err));
+
+                // Stories listener
+                onSnapshot(this.colRef('stories'), (snap) => {
+                    const cloudStories = [];
+                    const now = Date.now();
+                    snap.forEach(d => {
+                        const s = d.data();
+                        if (!s.expiresAt || s.expiresAt > now) cloudStories.push(s);
+                    });
+                    cloudStories.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                    window.mergeCloudCollection('stories', cloudStories);
+                }, (err) => console.warn(err));
+
+                // Typing indicator listener
+                onSnapshot(this.colRef('typing'), (snap) => {
+                    const typingMap = {};
+                    const now = Date.now();
+                    snap.forEach(d => {
+                        const tData = d.data();
+                        if (tData.updatedAt && (now - tData.updatedAt) < 4500) {
+                            typingMap[d.id] = tData;
+                        }
+                    });
+                    window.typingStatusMap = typingMap;
+                    if (window.currentTab === 'chat') window.render();
+                }, (err) => console.warn(err));
+
+                // Friend requests & notifications
+                onSnapshot(this.colRef('friendRequests'), (snap) => {
+                    const list = [];
+                    snap.forEach(d => list.push(d.data()));
+                    window.mergeCloudCollection('friendRequests', list);
+                }, (err) => console.warn(err));
+
+                onSnapshot(this.colRef('notifications'), (snap) => {
+                    const list = [];
+                    snap.forEach(d => list.push(d.data()));
+                    window.mergeCloudCollection('notifications', list);
+                }, (err) => console.warn(err));
+            }
+        };
+
+        window.addEventListener('DOMContentLoaded', () => {
+            window.cloudSync.init();
+        });
+    </script>
+
+    <script>
+        /* ==========================================================
+           CHATNOVA ULTIMATE ENGINE
+           Designed by Moise TUYIZERE (tmoise003@gmail.com)
+           ========================================================== */
+
+        // Official App Logo Photo (320470.jpg) with clean fallback
+        const OFFICIAL_LOGO_SRC = '320470.jpg';
+        const FALLBACK_LOGO_SRC = 'https://placehold.co/192x192/7c3aed/ffffff?text=CN';
+        let resolvedAppLogoDataUrl = OFFICIAL_LOGO_SRC;
+
+        // BroadcastChannel & Storage Event Sync for Multi-User Concurrent Access
+        const syncChannel = new BroadcastChannel('chatnova_ultimate_sync');
+        window.typingStatusMap = {};
+        let syncStatusText = 'Connecting...';
+        let deferredInstallPrompt = null;
+
+        window.updateSyncBadge = function(text) {
+            syncStatusText = text;
+            const el = document.getElementById('sync-status-badge');
+            if (el) el.textContent = text;
+        };
+
+        window.mergeCloudCollection = function(key, items) {
+            if (!window.db) return;
+            window.db[key] = items;
+            localStorage.setItem('cn_ultimate_' + key, JSON.stringify(items));
+            if (window.session && key === 'users') {
+                const updatedMe = items.find(u => u.id === window.session.id);
+                if (updatedMe) {
+                    window.session = updatedMe;
+                    localStorage.setItem('cn_ultimate_session', JSON.stringify(window.session));
+                }
+            }
+            if (typeof window.render === 'function') {
+                const activeEl = document.activeElement;
+                const activeId = activeEl ? activeEl.id : null;
+                const selStart = activeEl && activeEl.selectionStart ? activeEl.selectionStart : null;
+                window.render();
+                if (activeId) {
+                    const restored = document.getElementById(activeId);
+                    if (restored) {
+                        restored.focus();
+                        if (selStart !== null && restored.setSelectionRange) {
+                            try { restored.setSelectionRange(selStart, selStart); } catch(e) {}
+                        }
+                    }
+                }
+            }
+        };
+
+        // IndexedDB Wrapper for Voice & Media Blobs across multiple devices
+        let idb = null;
+        function initIndexedDB() {
+            return new Promise((resolve) => {
+                const request = indexedDB.open('ChatNovaUltimateMediaDB', 1);
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if(!db.objectStoreNames.contains('media')) {
+                        db.createObjectStore('media', { keyPath: 'id' });
+                    }
+                };
+                request.onsuccess = (e) => { idb = e.target.result; resolve(idb); };
+                request.onerror = () => resolve(null);
+            });
+        }
+
+        function saveBlobToIDB(id, blobData) {
+            return new Promise((resolve) => {
+                if(!idb) return resolve(null);
+                const tx = idb.transaction('media', 'readwrite');
+                const store = tx.objectStore('media');
+                store.put({ id, data: blobData });
+                tx.oncomplete = () => resolve(id);
+                tx.onerror = () => resolve(null);
+            });
+        }
+
+        function getBlobFromIDB(id) {
+            return new Promise((resolve) => {
+                if(!idb) return resolve(null);
+                const tx = idb.transaction('media', 'readonly');
+                const store = tx.objectStore('media');
+                const req = store.get(id);
+                req.onsuccess = () => resolve(req.result ? req.result.data : null);
+                req.onerror = () => resolve(null);
+            });
+        }
+
+        // Convert uploaded 320470.jpg photo into square PWA icons for Manifest, Favicon & Apple Touch Icon
+        function prepareOfficialAppLogo() {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => {
+                    try {
+                        const makeIcon = (size) => {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = size;
+                            canvas.height = size;
+                            const ctx = canvas.getContext('2d');
+                            const minDim = Math.min(img.width, img.height);
+                            const sx = (img.width - minDim) / 2;
+                            const sy = 0; // Top-aligned to preserve portrait framing
+                            ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, size, size);
+                            return canvas.toDataURL('image/png');
+                        };
+                        const icon192 = makeIcon(192);
+                        const icon512 = makeIcon(512);
+                        resolvedAppLogoDataUrl = icon192;
+                        document.getElementById('pwa-favicon').href = icon192;
+                        document.getElementById('pwa-apple-icon').href = icon192;
+                        resolve({ icon192, icon512, type: 'image/png' });
+                    } catch (e) {
+                        resolve({ icon192: OFFICIAL_LOGO_SRC, icon512: OFFICIAL_LOGO_SRC, type: 'image/jpeg' });
+                    }
+                };
+                img.onerror = () => {
+                    resolvedAppLogoDataUrl = FALLBACK_LOGO_SRC;
+                    resolve({ icon192: FALLBACK_LOGO_SRC, icon512: FALLBACK_LOGO_SRC, type: 'image/png' });
+                };
+                img.src = OFFICIAL_LOGO_SRC;
+            });
+        }
+
+        // Dynamic PWA Manifest Generator for Global Device Installation using 320470.jpg
+        async function setupPWAManifest() {
+            const iconsData = await prepareOfficialAppLogo();
+            const manifest = {
+                name: "ChatNova Ultimate",
+                short_name: "ChatNova",
+                description: "Global Real-Time Communication & Social Network Platform by Moise TUYIZERE",
+                start_url: window.location.href,
+                display: "standalone",
+                background_color: "#7c3aed",
+                theme_color: "#7c3aed",
+                icons: [
+                    { src: iconsData.icon192, sizes: "192x192", type: iconsData.type, purpose: "any maskable" },
+                    { src: iconsData.icon512, sizes: "512x512", type: iconsData.type, purpose: "any maskable" }
+                ]
+            };
+            const blob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+            document.getElementById('pwa-manifest').href = URL.createObjectURL(blob);
+        }
+
+        // Capture real browser beforeinstallprompt for One-Click PWA Install
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredInstallPrompt = e;
+            render();
+        });
+
+        // Web Audio API Notification Beep
+        function playNotificationSound() {
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(659.25, audioCtx.currentTime);
+                osc.frequency.setValueAtTime(987.77, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.3);
+            } catch(e) {}
+        }
+
+        // One-Click Picture Download Helper
+        function downloadPicture(url, filename = 'ChatNova_Picture.jpg') {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.target = '_blank';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showToast('Picture downloaded successfully!', 'success');
+        }
+
+        // Multi-Language Dictionary (English, French, Kinyarwanda, Spanish, Swahili, Arabic, German)
+        const i18n = {
+            en: { feed: "Feed", chat: "Chat", friends: "Friends", profile: "Profile", settings: "Settings", admin: "Admin Portal", post: "Post", search: "Search..." },
+            fr: { feed: "Fil d'actualité", chat: "Discussion", friends: "Amis", profile: "Profil", settings: "Paramètres", admin: "Portail Admin", post: "Publier", search: "Rechercher..." },
+            rw: { feed: "Ibyanditswe", chat: "Ikiganiro", friends: "Incuti", profile: "Umwirondoro", settings: "Igenamiterere", admin: "Ubuyobozi", post: "Ohereza", search: "Shakisha..." },
+            es: { feed: "Inicio", chat: "Chat", friends: "Amigos", profile: "Perfil", settings: "Ajustes", admin: "Admin", post: "Publicar", search: "Buscar..." },
+            sw: { feed: "Matangazo", chat: "Gumzo", friends: "Marafiki", profile: "Wasifu", settings: "Mipangilio", admin: "Utawala", post: "Chapisha", search: "Tafuta..." },
+            ar: { feed: "المنشورات", chat: "الدردشة", friends: "الأصدقاء", profile: "الملف الشخصي", settings: "الإعدادات", admin: "المشرف", post: "نشر", search: "بحث..." },
+            de: { feed: "Feed", chat: "Chat", friends: "Freunde", profile: "Profil", settings: "Einstellungen", admin: "Admin", post: "Beitrag", search: "Suchen..." }
+        };
+
+        function t(key) {
+            return (i18n[currentLang] && i18n[currentLang][key]) || i18n['en'][key] || key;
+        }
+
+        // App Database State
+        window.db = {
+            users: JSON.parse(localStorage.getItem('cn_ultimate_users')) || [
+                {
+                    id: 'admin_1',
+                    username: 'admin_moise',
+                    phone: '0786171184',
+                    password: 'Tuyizere@12A',
+                    name: 'Moise TUYIZERE',
+                    bio: 'Platform Creator & Lead Developer of ChatNova Ultimate.',
+                    avatar: '320470.jpg',
+                    cover: 'https://placehold.co/800x200/6d28d9/ffffff?text=ChatNova+Global+Network',
+                    role: 'admin',
+                    approved: true,
+                    verified: true,
+                    lastSeen: 'Just now',
+                    isOnline: true,
+                    friends: ['user_1'],
+                    followers: ['user_1'],
+                    following: ['user_1'],
+                    blocked: [],
+                    loginActivity: []
+                },
+                {
+                    id: 'user_1',
+                    username: 'john_doe',
+                    phone: '+250780000001',
+                    password: 'password123',
+                    name: 'John Doe',
+                    bio: 'Global explorer & tech enthusiast 🌍',
+                    avatar: 'https://placehold.co/150x150/3b82f6/ffffff?text=JD',
+                    cover: 'https://placehold.co/800x200/1d4ed8/ffffff?text=John+Cover',
+                    role: 'user',
+                    approved: true,
+                    verified: false,
+                    lastSeen: '2m ago',
+                    isOnline: true,
+                    friends: ['admin_1'],
+                    followers: ['admin_1'],
+                    following: ['admin_1'],
+                    blocked: [],
+                    loginActivity: []
+                }
+            ],
+            posts: JSON.parse(localStorage.getItem('cn_ultimate_posts')) || [
+                {
+                    id: 'post_1',
+                    authorId: 'admin_1',
+                    createdAt: Date.now() - 3600000,
+                    content: 'Welcome to ChatNova Ultimate! Connect globally across any device in seconds — sign up directly, share media stories from your phone or computer, and chat in real time! 🚀🌍',
+                    image: 'https://placehold.co/800x450/7c3aed/ffffff?text=Welcome+To+ChatNova+Global',
+                    likes: ['user_1'],
+                    comments: [{ id: 'c_1', authorId: 'user_1', text: 'Amazing global platform by Moise TUYIZERE!', time: '10m ago' }],
+                    shares: 5,
+                    bookmarks: ['admin_1'],
+                    time: '1h ago'
+                }
+            ],
+            messages: JSON.parse(localStorage.getItem('cn_ultimate_messages')) || [],
+            stories: JSON.parse(localStorage.getItem('cn_ultimate_stories')) || JSON.parse(localStorage.getItem('cn_stories')) || [],
+            friendRequests: JSON.parse(localStorage.getItem('cn_ultimate_friendRequests')) || JSON.parse(localStorage.getItem('cn_friendRequests')) || [],
+            notifications: JSON.parse(localStorage.getItem('cn_ultimate_notifications')) || JSON.parse(localStorage.getItem('cn_notifications')) || [],
+            offlineQueue: JSON.parse(localStorage.getItem('cn_offlineQueue')) || []
+        };
+        let db = window.db;
+
+        window.session = JSON.parse(localStorage.getItem('cn_ultimate_session')) || null;
+        let session = window.session;
+        window.currentTab = 'feed'; // feed, chat, friends, profile, notifications, settings, admin
+        let currentTab = window.currentTab;
+        let activeChatUserId = null;
+        let isDarkMode = localStorage.getItem('cn_dark') === 'true';
+        let currentLang = localStorage.getItem('cn_lang') || 'en';
+        let dataSavingMode = localStorage.getItem('cn_datasave') === 'true';
+
+        // Advanced States
+        let uploadedGalleryImages = [];
+        let replyToMsgId = null;
+        let draftMessages = JSON.parse(localStorage.getItem('cn_drafts')) || {};
+        let pinnedMessages = JSON.parse(localStorage.getItem('cn_pins')) || [];
+        let disappearingTimerMode = 0;
+        let chatSearchKeyword = '';
+        let activeStoryIndex = null;
+        let storyProgressTimer = null;
+
+        if (isDarkMode) document.documentElement.classList.add('dark');
+
+        function saveDB(changedCollection = null, changedDoc = null, isDelete = false) {
+            localStorage.setItem('cn_ultimate_users', JSON.stringify(db.users));
+            localStorage.setItem('cn_ultimate_posts', JSON.stringify(db.posts));
+            localStorage.setItem('cn_ultimate_messages', JSON.stringify(db.messages));
+            localStorage.setItem('cn_ultimate_stories', JSON.stringify(db.stories));
+            localStorage.setItem('cn_stories', JSON.stringify(db.stories));
+            localStorage.setItem('cn_ultimate_friendRequests', JSON.stringify(db.friendRequests));
+            localStorage.setItem('cn_friendRequests', JSON.stringify(db.friendRequests));
+            localStorage.setItem('cn_ultimate_notifications', JSON.stringify(db.notifications));
+            localStorage.setItem('cn_notifications', JSON.stringify(db.notifications));
+            localStorage.setItem('cn_offlineQueue', JSON.stringify(db.offlineQueue));
+            localStorage.setItem('cn_drafts', JSON.stringify(draftMessages));
+            localStorage.setItem('cn_pins', JSON.stringify(pinnedMessages));
+            if (session) {
+                window.session = session;
+                localStorage.setItem('cn_ultimate_session', JSON.stringify(session));
+            }
+            syncChannel.postMessage({ type: 'DB_UPDATE', timestamp: Date.now() });
+
+            // Sync directly to Global Cloud Firestore if connected
+            if (window.cloudSync && window.cloudSync.enabled && changedCollection && changedDoc) {
+                if (isDelete) {
+                    window.cloudSync.removeDoc(changedCollection, changedDoc.id);
+                } else {
+                    window.cloudSync.pushDoc(changedCollection, changedDoc.id, changedDoc);
+                }
+            }
+        }
+
+        // Real-Time Sync across multiple tabs and concurrent users
+        window.addEventListener('storage', (event) => {
+            if (event.key && event.key.startsWith('cn_ultimate_')) {
+                db.users = JSON.parse(localStorage.getItem('cn_ultimate_users')) || db.users;
+                db.posts = JSON.parse(localStorage.getItem('cn_ultimate_posts')) || db.posts;
+                db.messages = JSON.parse(localStorage.getItem('cn_ultimate_messages')) || db.messages;
+                db.stories = JSON.parse(localStorage.getItem('cn_ultimate_stories')) || db.stories;
+                db.friendRequests = JSON.parse(localStorage.getItem('cn_ultimate_friendRequests')) || db.friendRequests;
+                db.notifications = JSON.parse(localStorage.getItem('cn_ultimate_notifications')) || db.notifications;
+                render();
+            }
+        });
+
+        syncChannel.onmessage = (event) => {
+            if(event.data && event.data.type === 'DB_UPDATE') {
+                db.users = JSON.parse(localStorage.getItem('cn_ultimate_users')) || db.users;
+                db.posts = JSON.parse(localStorage.getItem('cn_ultimate_posts')) || db.posts;
+                db.messages = JSON.parse(localStorage.getItem('cn_ultimate_messages')) || db.messages;
+                db.stories = JSON.parse(localStorage.getItem('cn_ultimate_stories')) || db.stories;
+                db.friendRequests = JSON.parse(localStorage.getItem('cn_ultimate_friendRequests')) || db.friendRequests;
+                db.notifications = JSON.parse(localStorage.getItem('cn_ultimate_notifications')) || db.notifications;
+                render();
+            }
+        };
+
+        window.addEventListener('online', () => {
+            document.getElementById('offline-banner')?.classList.add('hidden');
+            if(db.offlineQueue.length > 0) {
+                db.offlineQueue.forEach(m => {
+                    db.messages.push(m);
+                    saveDB('messages', m);
+                });
+                db.offlineQueue = [];
+                saveDB();
+                render();
+            }
+            showToast('Reconnected! Synced offline queue globally.', 'success');
+        });
+        window.addEventListener('offline', () => {
+            document.getElementById('offline-banner')?.classList.remove('hidden');
+            showToast('Offline mode active. Queueing actions.', 'error');
+        });
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            if(!container) return;
+            const toast = document.createElement('div');
+            const bg = type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-emerald-600' : 'bg-violet-600';
+            toast.className = `${bg} text-white px-4 py-2.5 rounded-xl shadow-xl text-sm transition-all transform translate-y-2 opacity-0 flex items-center justify-between gap-3 pointer-events-auto`;
+            toast.innerHTML = `<span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => toast.classList.remove('translate-y-2', 'opacity-0'), 50);
+            setTimeout(() => {
+                toast.classList.add('translate-y-2', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+
+        function isValidPhone(phone) {
+            return /^(\+?[1-9]\d{1,14}|07\d{8})$/.test(phone.trim());
+        }
+
+        // Compress Image/Media on Device for Fast Real-Time Multi-Device Sync
+        function compressImageFile(file, maxWidth = 800, quality = 0.72) {
+            return new Promise((resolve) => {
+                if (!file.type.startsWith('image/')) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve({ dataUrl: e.target.result, mediaType: file.type.startsWith('video/') ? 'video' : 'file' });
+                    reader.readAsDataURL(file);
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        let w = img.width;
+                        let h = img.height;
+                        if (w > maxWidth) {
+                            h = Math.round((h * maxWidth) / w);
+                            w = maxWidth;
+                        }
+                        canvas.width = w;
+                        canvas.height = h;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, w, h);
+                        resolve({ dataUrl: canvas.toDataURL('image/jpeg', quality), mediaType: 'image' });
+                    };
+                    img.onerror = () => resolve({ dataUrl: e.target.result, mediaType: 'image' });
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        /* ==========================================================
+           ROUTER & VIEW RENDERING
+           ========================================================== */
+        window.render = function render() {
+            const app = document.getElementById('app');
+            if(!app) return;
+            app.innerHTML = '';
+
+            if (!session) {
+                app.innerHTML = renderAuthScreen();
+                attachAuthEvents();
+            } else {
+                app.innerHTML = renderMainLayout();
+                attachMainEvents();
+            }
+        };
+
+        /* ==========================================================
+           AUTH SCREENS (LOGIN, DIRECT GLOBAL SIGNUP, FORGOT)
+           ========================================================== */
+        let authMode = 'login'; // 'login', 'signup', 'forgot'
+
+        function renderAuthScreen() {
+            return `
+                <div class="flex-1 flex flex-col items-center justify-center p-4 bg-gradient-to-br from-violet-500/10 via-slate-50 to-violet-50 dark:from-slate-900 dark:via-slate-900 dark:to-slate-800">
+                    <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 p-8">
+                        <div class="text-center mb-6">
+                            <div class="relative inline-flex items-center justify-center w-20 h-20 rounded-2xl shadow-lg mb-3 overflow-hidden border-2 border-violet-600 bg-violet-600">
+                                <img src="${OFFICIAL_LOGO_SRC}" onerror="this.src='${FALLBACK_LOGO_SRC}'" alt="ChatNova Logo" class="w-full h-full object-cover">
+                            </div>
+                            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">ChatNova Ultimate</h1>
+                            <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">Global Real-Time Multi-Device Social & Chat Platform</p>
+                            <div class="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 text-[11px] font-semibold">
+                                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                                <span id="sync-status-badge">${syncStatusText}</span>
+                            </div>
+                        </div>
+
+                        ${authMode !== 'forgot' ? `
+                            <div class="flex rounded-lg bg-slate-100 dark:bg-slate-700 p-1 mb-6">
+                                <button id="tab-login-btn" class="flex-1 py-2 text-sm font-medium rounded-md transition ${authMode === 'login' ? 'bg-white dark:bg-slate-600 text-violet-600 dark:text-white shadow' : 'text-slate-600 dark:text-slate-300'}">Login</button>
+                                <button id="tab-signup-btn" class="flex-1 py-2 text-sm font-medium rounded-md transition ${authMode === 'signup' ? 'bg-white dark:bg-slate-600 text-violet-600 dark:text-white shadow' : 'text-slate-600 dark:text-slate-300'}">Sign Up</button>
+                            </div>
+                        ` : ''}
+
+                        ${authMode === 'login' ? renderLoginForm() : authMode === 'signup' ? renderSignupForm() : renderForgotForm()}
+
+                        <div class="mt-5 pt-4 border-t border-slate-100 dark:border-slate-700 flex items-center justify-between">
+                            <button type="button" onclick="installPWA()" class="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline flex items-center gap-1.5">
+                                <i class="fa-solid fa-download"></i> Install App on Device
+                            </button>
+                            <span class="text-[11px] text-slate-400">${db.users.length} Global Members</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderLoginForm() {
+            return `
+                <form id="login-form" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Phone Number or Username</label>
+                        <input type="text" id="login-phone" placeholder="e.g. 0786171184 or @username" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Password</label>
+                        <input type="password" id="login-password" placeholder="••••••••" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div class="flex items-center justify-between text-xs">
+                        <label class="flex items-center gap-2 cursor-pointer"><input type="checkbox" id="remember-me" checked class="rounded text-violet-600"> Remember me</label>
+                        <button type="button" onclick="authMode='forgot'; render();" class="text-violet-600 dark:text-violet-400 font-semibold hover:underline">Forgot password?</button>
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-violet-600 hover:bg-violet-700 text-white font-medium rounded-lg shadow-lg transition duration-200">Sign In</button>
+                </form>
+            `;
+        }
+
+        function renderSignupForm() {
+            return `
+                <form id="signup-form" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Full Name</label>
+                        <input type="text" id="signup-name" placeholder="Your Full Name" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Unique Username</label>
+                        <input type="text" id="signup-username" placeholder="username" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Phone Number</label>
+                        <input type="text" id="signup-phone" placeholder="+25078..." required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Password</label>
+                        <input type="password" id="signup-password" placeholder="At least 6 characters" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-violet-600 hover:bg-violet-700 text-white font-medium rounded-lg shadow-lg transition duration-200">Create Account & Connect Instantly</button>
+                    <p class="text-xs text-center text-emerald-600 dark:text-emerald-400 font-medium mt-2">🌍 Instant Global Access: Sign up from any device and connect immediately!</p>
+                </form>
+            `;
+        }
+
+        function renderForgotForm() {
+            return `
+                <form id="forgot-form" class="space-y-4">
+                    <h3 class="font-bold text-base">Password Recovery & Profile Verification</h3>
+                    <p class="text-xs text-slate-500 dark:text-slate-400">Enter all profile details used during registration to verify your identity and set a new password.</p>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Full Name (Registration Profile)</label>
+                        <input type="text" id="forgot-name" placeholder="Your Full Name" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Username</label>
+                        <input type="text" id="forgot-username" placeholder="Your Registered Username" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Telephone / Phone Number</label>
+                        <input type="text" id="forgot-phone" placeholder="e.g. +25078... or 078..." required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">New Password</label>
+                        <input type="password" id="forgot-new-password" placeholder="At least 6 characters" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Confirm New Password</label>
+                        <input type="password" id="forgot-confirm-password" placeholder="Re-enter new password" required class="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                    </div>
+                    <button type="submit" class="w-full py-3 bg-violet-600 hover:bg-violet-700 text-white font-medium rounded-lg shadow-lg transition duration-200">Verify Profile & Change Password</button>
+                    <button type="button" onclick="authMode='login'; render();" class="w-full py-2 text-xs text-slate-500 hover:underline">Back to Login</button>
+                </form>
+            `;
+        }
+
+        function attachAuthEvents() {
+            document.getElementById('tab-login-btn')?.addEventListener('click', () => { authMode = 'login'; render(); });
+            document.getElementById('tab-signup-btn')?.addEventListener('click', () => { authMode = 'signup'; render(); });
+
+            document.getElementById('login-form')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const identifier = document.getElementById('login-phone').value.trim().replace(/^@/, '').toLowerCase();
+                const pass = document.getElementById('login-password').value;
+
+                const user = db.users.find(u => (u.phone === identifier || u.username.toLowerCase() === identifier) && u.password === pass);
+                if (!user) { showToast('Invalid phone/username or password.', 'error'); return; }
+                if (user.approved === false) { showToast('Account is currently suspended by Admin.', 'error'); return; }
+
+                user.isOnline = true;
+                user.lastSeen = 'Just now';
+                session = user;
+                window.session = user;
+                saveDB('users', user);
+                showToast(`Welcome back, ${user.name}!`, 'success');
+                render();
+            });
+
+            document.getElementById('signup-form')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const name = document.getElementById('signup-name').value.trim();
+                const username = document.getElementById('signup-username').value.trim().replace(/^@/, '').toLowerCase();
+                const phone = document.getElementById('signup-phone').value.trim();
+                const password = document.getElementById('signup-password').value;
+
+                if (!isValidPhone(phone)) { showToast('Invalid phone format.', 'error'); return; }
+                if (password.length < 6) { showToast('Password must be at least 6 characters.', 'error'); return; }
+                if (db.users.some(u => u.username.toLowerCase() === username)) { showToast('Username already taken.', 'error'); return; }
+                if (db.users.some(u => u.phone === phone)) { showToast('Phone already registered.', 'error'); return; }
+
+                const newUser = {
+                    id: 'u_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+                    name,
+                    username,
+                    phone,
+                    password,
+                    bio: 'Connected globally on ChatNova Ultimate 🌍',
+                    avatar: `https://placehold.co/150x150/7c3aed/ffffff?text=${encodeURIComponent(name.charAt(0).toUpperCase())}`,
+                    cover: 'https://placehold.co/800x200/6d28d9/ffffff?text=ChatNova+Member',
+                    role: 'user',
+                    approved: true, // Auto-approved so any device can sign up and connect globally right away
+                    verified: false,
+                    lastSeen: 'Just now',
+                    isOnline: true,
+                    friends: ['admin_1'],
+                    followers: [],
+                    following: ['admin_1'],
+                    blocked: [],
+                    loginActivity: []
+                };
+
+                db.users.push(newUser);
+                session = newUser;
+                window.session = newUser;
+                saveDB('users', newUser);
+                showToast(`Welcome to ChatNova, ${name}! Connected globally.`, 'success');
+                render();
+            });
+
+            document.getElementById('forgot-form')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const name = document.getElementById('forgot-name').value.trim().toLowerCase();
+                const username = document.getElementById('forgot-username').value.trim().replace(/^@/, '').toLowerCase();
+                const phone = document.getElementById('forgot-phone').value.trim();
+                const newPassword = document.getElementById('forgot-new-password').value;
+                const confirmPassword = document.getElementById('forgot-confirm-password').value;
+
+                const user = db.users.find(u =>
+                    u.name.trim().toLowerCase() === name &&
+                    u.username.trim().toLowerCase() === username &&
+                    u.phone.trim() === phone
+                );
+
+                if (!user) {
+                    showToast('Verification failed: Full Name, Username, and Phone Number must match your registration profile.', 'error');
+                    return;
+                }
+
+                if (newPassword.length < 6) {
+                    showToast('New password must be at least 6 characters.', 'error');
+                    return;
+                }
+
+                if (newPassword !== confirmPassword) {
+                    showToast('New password and confirmation do not match.', 'error');
+                    return;
+                }
+
+                user.password = newPassword;
+                saveDB('users', user);
+                showToast('Password successfully updated! You can now log in with your new password.', 'success');
+                authMode = 'login';
+                render();
+            });
+        }
+
+        /* ==========================================================
+           MAIN LAYOUT & NAVIGATION
+           ========================================================== */
+        function renderMainLayout() {
+            const isAdmin = session.role === 'admin';
+            const unreadCount = db.notifications.filter(n => n.userId === session.id && !n.read).length;
+            const pendingUsersCount = isAdmin ? db.users.filter(u => !u.approved).length : 0;
+
+            return `
+                <header class="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-40">
+                    <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+                        <div class="flex items-center gap-3 cursor-pointer" onclick="switchTab('feed')">
+                            <div class="w-10 h-10 bg-violet-600 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow overflow-hidden border border-violet-500">
+                                <img src="${OFFICIAL_LOGO_SRC}" onerror="this.src='${FALLBACK_LOGO_SRC}'" alt="ChatNova" class="w-full h-full object-cover">
+                            </div>
+                            <div>
+                                <span class="text-xl font-bold bg-gradient-to-r from-violet-600 to-indigo-600 bg-clip-text text-transparent block leading-none">ChatNova</span>
+                                <span id="sync-status-badge" class="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">${syncStatusText}</span>
+                            </div>
+                        </div>
+
+                        <!-- Global Username Search -->
+                        <div class="hidden md:flex items-center relative w-72">
+                            <span class="absolute left-3 text-slate-400"><i class="fa-solid fa-search"></i></span>
+                            <input type="text" id="global-search-input" placeholder="${t('search')}" oninput="handleGlobalSearch(event)" class="w-full pl-10 pr-4 py-2 rounded-full bg-slate-100 dark:bg-slate-700 text-sm focus:ring-2 focus:ring-violet-500 outline-none">
+                        </div>
+
+                        <div class="flex items-center gap-2 sm:gap-3">
+                            <button onclick="installPWA()" title="Install ChatNova App" class="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-violet-50 dark:bg-violet-950/60 text-violet-600 dark:text-violet-300 text-xs font-semibold hover:bg-violet-100 transition">
+                                <i class="fa-solid fa-download"></i> <span>Install App</span>
+                            </button>
+
+                            <button id="theme-toggle" class="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center hover:bg-slate-200 transition">
+                                <i class="fa-solid ${isDarkMode ? 'fa-sun text-amber-400' : 'fa-moon text-slate-600'}"></i>
+                            </button>
+
+                            <button onclick="switchTab('notifications')" class="relative w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center hover:bg-slate-200 transition">
+                                <i class="fa-solid fa-bell text-slate-600 dark:text-slate-300"></i>
+                                ${unreadCount > 0 ? `<span class="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] flex items-center justify-center font-bold">${unreadCount}</span>` : ''}
+                            </button>
+
+                            <div class="flex items-center gap-3 pl-2 border-l border-slate-200 dark:border-slate-700 cursor-pointer" onclick="switchTab('profile')">
+                                <img src="${session.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" alt="Avatar" class="w-9 h-9 rounded-full object-cover border-2 border-violet-600">
+                                <div class="hidden lg:block text-left">
+                                    <div class="text-sm font-semibold leading-tight">${session.name}</div>
+                                    <div class="text-xs text-slate-500">@${session.username}</div>
+                                </div>
+                            </div>
+
+                            <button id="logout-btn" title="Logout" class="w-10 h-10 rounded-full bg-red-50 text-red-600 flex items-center justify-center hover:bg-red-100 transition">
+                                <i class="fa-solid fa-right-from-bracket"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Navigation Tabs Bar -->
+                    <div class="bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-700 px-4 flex justify-around sm:justify-center sm:gap-6 py-2 text-sm font-medium overflow-x-auto">
+                        <button onclick="switchTab('feed')" class="flex items-center gap-2 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${currentTab === 'feed' ? 'bg-violet-600 text-white shadow' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200'}">
+                            <i class="fa-solid fa-house"></i> <span>${t('feed')}</span>
+                        </button>
+                        <button onclick="switchTab('chat')" class="flex items-center gap-2 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${currentTab === 'chat' ? 'bg-violet-600 text-white shadow' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200'}">
+                            <i class="fa-solid fa-comments"></i> <span>${t('chat')}</span>
+                        </button>
+                        <button onclick="switchTab('friends')" class="flex items-center gap-2 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${currentTab === 'friends' ? 'bg-violet-600 text-white shadow' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200'}">
+                            <i class="fa-solid fa-user-group"></i> <span>${t('friends')}</span>
+                        </button>
+                        <button onclick="switchTab('profile')" class="flex items-center gap-2 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${currentTab === 'profile' ? 'bg-violet-600 text-white shadow' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200'}">
+                            <i class="fa-solid fa-user"></i> <span>${t('profile')}</span>
+                        </button>
+                        <button onclick="switchTab('settings')" class="flex items-center gap-2 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${currentTab === 'settings' ? 'bg-violet-600 text-white shadow' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200'}">
+                            <i class="fa-solid fa-gear"></i> <span>${t('settings')}</span>
+                        </button>
+                        <button onclick="switchTab('verification')" class="flex items-center gap-2 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${currentTab === 'verification' ? 'bg-blue-600 text-white shadow' : 'text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-700'}">
+                            <i class="fa-solid fa-circle-check"></i> <span>Business Verification</span>
+                        </button>
+                        ${isAdmin ? `
+                        <button onclick="switchTab('admin')" class="relative flex items-center gap-2 px-3 py-1.5 rounded-lg transition whitespace-nowrap ${currentTab === 'admin' ? 'bg-amber-600 text-white shadow' : 'text-amber-600 hover:bg-amber-50'}">
+                            <i class="fa-solid fa-shield-halved"></i> <span>${t('admin')}</span>
+                            ${pendingUsersCount > 0 ? `<span class="absolute -top-1 -right-1 w-5 h-5 bg-red-600 text-white rounded-full text-[10px] flex items-center justify-center font-bold">${pendingUsersCount}</span>` : ''}
+                        </button>
+                        ` : ''}
+                    </div>
+                </header>
+
+                <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6">
+                    ${renderCurrentTabContent()}
+                </main>
+            `;
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+            window.currentTab = tab;
+            render();
+        }
+
+        function renderCurrentTabContent() {
+            switch(currentTab) {
+                case 'feed': return renderFeedTab();
+                case 'chat': return renderChatTab();
+                case 'friends': return renderFriendsTab();
+                case 'profile': return renderProfileTab();
+                case 'notifications': return renderNotificationsTab();
+                case 'settings': return renderSettingsTab();
+                case 'verification': return renderBusinessVerificationTab();
+                case 'admin': return session.role === 'admin' ? renderAdminTab() : renderFeedTab();
+                default: return renderFeedTab();
+            }
+        }
+
+        /* ==========================================================
+           TAB 1: SOCIAL FEED, DEVICE MEDIA STORIES & STORY VIEWER
+           ========================================================== */
+        function renderFeedTab() {
+            return `
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-2 space-y-6">
+                        <!-- Stories Bar with Direct Device Media Picker -->
+                        <div class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="font-bold text-sm text-slate-700 dark:text-slate-300">24-Hour Stories</h3>
+                                <label class="text-xs text-violet-600 font-semibold hover:underline cursor-pointer flex items-center gap-1">
+                                    <i class="fa-solid fa-camera"></i> + Post Story from Device
+                                    <input type="file" id="story-device-file-top" class="hidden" accept="image/*,video/*" onchange="handleDeviceStoryUpload(event)">
+                                </label>
+                            </div>
+                            <div class="flex gap-3 overflow-x-auto pb-2">
+                                <label class="flex-shrink-0 w-24 h-36 rounded-xl border-2 border-dashed border-violet-400 flex flex-col items-center justify-center cursor-pointer hover:bg-violet-50 dark:hover:bg-slate-700/50 transition p-2 text-center">
+                                    <div class="w-9 h-9 rounded-full bg-violet-600 text-white flex items-center justify-center text-sm mb-1.5 shadow"><i class="fa-solid fa-plus"></i></div>
+                                    <span class="text-[11px] font-semibold text-slate-700 dark:text-slate-200">Add Media Story</span>
+                                    <span class="text-[9px] text-slate-400 mt-0.5">Photo / Video</span>
+                                    <input type="file" id="story-device-file-card" class="hidden" accept="image/*,video/*" onchange="handleDeviceStoryUpload(event)">
+                                </label>
+                                ${db.stories.map((s, idx) => {
+                                    const author = db.users.find(u => u.id === s.userId) || { name: 'User', avatar: FALLBACK_LOGO_SRC };
+                                    const isVideo = s.mediaType === 'video' || (s.media && s.media.startsWith('data:video'));
+                                    return `
+                                        <div class="flex-shrink-0 w-24 h-36 rounded-xl relative overflow-hidden shadow cursor-pointer group border-2 border-violet-500" onclick="viewStory('${s.id}')">
+                                            ${isVideo
+                                                ? `<video src="${s.media}" class="w-full h-full object-cover" muted></video>`
+                                                : `<img src="${s.media}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300">`
+                                            }
+                                            <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-transparent"></div>
+                                            <img src="${author.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="absolute top-2 left-2 w-7 h-7 rounded-full border-2 border-violet-500 object-cover">
+                                            ${isVideo ? `<span class="absolute top-2 right-2 bg-black/60 text-white px-1.5 py-0.5 rounded text-[9px]"><i class="fa-solid fa-play"></i></span>` : ''}
+                                            <span class="absolute bottom-2 left-2 right-2 text-[11px] text-white font-semibold truncate">${author.name}</span>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+
+                        <!-- Create Post Box -->
+                        <div class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
+                            <form id="create-post-form">
+                                <div class="flex gap-3 mb-3">
+                                    <img src="${session.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-10 h-10 rounded-full object-cover">
+                                    <textarea id="post-text-input" placeholder="What's on your mind, ${session.name}?" rows="2" class="w-full bg-slate-100 dark:bg-slate-700 rounded-xl p-3 text-sm focus:ring-2 focus:ring-violet-500 outline-none resize-none"></textarea>
+                                </div>
+                                <div id="post-gallery-preview" class="grid grid-cols-3 gap-2 mb-3 ${uploadedGalleryImages.length === 0 ? 'hidden' : ''}">
+                                    ${uploadedGalleryImages.map((imgSrc, idx) => `
+                                        <div class="relative rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-900 h-24">
+                                            <img src="${imgSrc}" class="w-full h-full object-cover">
+                                            <button type="button" onclick="removeGalleryImage(${idx})" class="absolute top-1 right-1 bg-red-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs"><i class="fa-solid fa-xmark"></i></button>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                                <div class="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-700">
+                                    <label class="cursor-pointer px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                                        <i class="fa-solid fa-images text-violet-500"></i> Add Pictures
+                                        <input type="file" id="post-gallery-file" class="hidden" accept="image/*" multiple onchange="handlePostGalleryUpload(event)">
+                                    </label>
+                                    <button type="submit" class="px-5 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-sm font-semibold shadow transition">${t('post')}</button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <!-- Feed Stream -->
+                        <div class="space-y-4">
+                            ${db.posts.map(post => {
+                                const author = db.users.find(u => u.id === post.authorId) || { name: 'Unknown', username: 'unknown', avatar: FALLBACK_LOGO_SRC };
+                                const isLiked = post.likes.includes(session.id);
+                                const isBookmarked = post.bookmarks && post.bookmarks.includes(session.id);
+                                return `
+                                    <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700">
+                                        <div class="flex items-center justify-between mb-3">
+                                            <div class="flex items-center gap-3">
+                                                <img src="${author.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-10 h-10 rounded-full object-cover">
+                                                <div>
+                                                    <div class="font-bold text-sm flex items-center gap-1">${author.name} ${author.verified ? '<i class="fa-solid fa-circle-check text-violet-600 text-xs"></i>' : ''}</div>
+                                                    <div class="text-xs text-slate-400">@${author.username} • ${post.time}</div>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center gap-2">
+                                                <button onclick="toggleBookmarkPost('${post.id}')" class="text-slate-400 hover:text-violet-600 text-sm" title="Bookmark"><i class="${isBookmarked ? 'fa-solid' : 'fa-regular'} fa-bookmark"></i></button>
+                                                ${post.authorId === session.id || session.role === 'admin' ? `<button onclick="deletePost('${post.id}')" class="text-slate-400 hover:text-red-500 text-sm"><i class="fa-solid fa-trash"></i></button>` : ''}
+                                            </div>
+                                        </div>
+                                        <p class="text-sm mb-3 whitespace-pre-line">${post.content}</p>
+                                        
+                                        <!-- One-Click Picture Download on Feed Posts -->
+                                        ${post.image ? `
+                                            <div class="mb-3 rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-900 relative group">
+                                                <img src="${post.image}" class="w-full max-h-96 object-cover">
+                                                <button onclick="downloadPicture('${post.image}', 'ChatNova_Post.jpg')" class="absolute bottom-3 right-3 bg-black/70 hover:bg-violet-600 text-white px-3 py-1.5 rounded-xl text-xs font-semibold shadow-lg flex items-center gap-1.5 transition">
+                                                    <i class="fa-solid fa-download"></i> Download Picture
+                                                </button>
+                                            </div>
+                                        ` : ''}
+                                        
+                                        <div class="flex items-center justify-between text-xs text-slate-500 border-y border-slate-100 dark:border-slate-700 py-2 mb-3">
+                                            <span>${post.likes.length} Likes</span>
+                                            <span>${post.comments.length} Comments • ${post.shares} Shares</span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <button onclick="toggleLikePost('${post.id}')" class="flex-1 flex items-center justify-center gap-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-sm ${isLiked ? 'text-rose-500 font-bold' : 'text-slate-600 dark:text-slate-300'}">
+                                                <i class="${isLiked ? 'fa-solid' : 'fa-regular'} fa-heart"></i> Like
+                                            </button>
+                                            <button onclick="document.getElementById('comment-input-${post.id}').focus()" class="flex-1 flex items-center justify-center gap-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-sm text-slate-600 dark:text-slate-300">
+                                                <i class="fa-regular fa-comment"></i> Comment
+                                            </button>
+                                            <button onclick="sharePost('${post.id}')" class="flex-1 flex items-center justify-center gap-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-sm text-slate-600 dark:text-slate-300">
+                                                <i class="fa-solid fa-share"></i> Share
+                                            </button>
+                                        </div>
+
+                                        <div class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-700 space-y-2">
+                                            ${post.comments.map(c => {
+                                                const cAuthor = db.users.find(u => u.id === c.authorId) || { name: 'User', avatar: FALLBACK_LOGO_SRC };
+                                                return `
+                                                    <div class="flex items-start gap-2 bg-slate-50 dark:bg-slate-900/50 p-2.5 rounded-xl">
+                                                        <img src="${cAuthor.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-7 h-7 rounded-full object-cover">
+                                                        <div class="flex-1 text-xs">
+                                                            <span class="font-bold">${cAuthor.name}</span>
+                                                            <span class="text-slate-600 dark:text-slate-300 ml-1">${c.text}</span>
+                                                        </div>
+                                                    </div>
+                                                `;
+                                            }).join('')}
+                                            <div class="flex gap-2 mt-2">
+                                                <input type="text" id="comment-input-${post.id}" placeholder="Write a comment..." class="flex-1 bg-slate-100 dark:bg-slate-700 rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-1 focus:ring-violet-500" onkeydown="if(event.key==='Enter') addComment('${post.id}')">
+                                                <button onclick="addComment('${post.id}')" class="px-3 py-1.5 bg-violet-600 text-white rounded-lg text-xs font-semibold">Send</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+
+                    <!-- Right Column -->
+                    <div class="space-y-6">
+                        <div class="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm border border-slate-200 dark:border-slate-700">
+                            <h3 class="font-bold text-sm text-slate-700 dark:text-slate-300 mb-3">Suggested Friends & Global Users</h3>
+                            <div class="space-y-3">
+                                ${db.users.filter(u => u.id !== session.id && u.approved).slice(0, 6).map(user => {
+                                    const isFriend = session.friends.includes(user.id);
+                                    return `
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex items-center gap-3 cursor-pointer" onclick="selectChatUser('${user.id}'); switchTab('chat');">
+                                            <div class="relative">
+                                                <img src="${user.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-10 h-10 rounded-full object-cover">
+                                                <span class="absolute bottom-0 right-0 w-2.5 h-2.5 ${user.isOnline ? 'bg-emerald-500' : 'bg-slate-400'} border border-white rounded-full"></span>
+                                            </div>
+                                            <div>
+                                                <div class="font-semibold text-sm">${user.name}</div>
+                                                <div class="text-xs text-slate-400">@${user.username}</div>
+                                            </div>
+                                        </div>
+                                        <div class="flex gap-1.5">
+                                            <button onclick="selectChatUser('${user.id}'); switchTab('chat');" class="px-2.5 py-1.5 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-xs font-semibold hover:bg-violet-600 hover:text-white transition" title="Message"><i class="fa-solid fa-comment"></i></button>
+                                            ${!isFriend ? `<button onclick="sendFriendRequest('${user.id}')" class="px-3 py-1.5 bg-violet-50 dark:bg-violet-900/40 text-violet-600 rounded-lg text-xs font-semibold hover:bg-violet-100 transition">Add</button>` : ''}
+                                        </div>
+                                    </div>
+                                `;}).join('')}
+                            </div>
+                        </div>
+
+                        <div class="bg-gradient-to-br from-violet-600 to-indigo-700 text-white rounded-2xl p-5 shadow-lg">
+                            <div class="flex items-center gap-3 mb-3">
+                                <img src="${OFFICIAL_LOGO_SRC}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-12 h-12 rounded-xl object-cover border-2 border-white/80 shadow">
+                                <div>
+                                    <h3 class="font-bold text-base leading-tight"><i class="fa-solid fa-globe"></i> Global Multi-Device Access</h3>
+                                    <span class="text-[11px] text-violet-200">Official ChatNova PWA</span>
+                                </div>
+                            </div>
+                            <p class="text-xs text-violet-100 mb-4">ChatNova Ultimate connects users across devices in real time and installs directly onto your home screen with your official app logo.</p>
+                            <button onclick="installPWA()" class="w-full py-2.5 bg-white text-violet-600 font-bold rounded-xl text-xs shadow hover:bg-violet-50 transition flex items-center justify-center gap-2">
+                                <i class="fa-solid fa-download"></i> Install App Now
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function handleDeviceStoryUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const caption = prompt('Add a caption to your story (optional):', '');
+            showToast('Uploading story from your device...', 'info');
+            const compressed = await compressImageFile(file, 720, 0.72);
+            const newStory = {
+                id: 's_' + Date.now(),
+                userId: session.id,
+                media: compressed.dataUrl,
+                mediaType: compressed.mediaType,
+                caption: caption || '',
+                reactions: {},
+                createdAt: Date.now(),
+                expiresAt: Date.now() + (24 * 60 * 60 * 1000),
+                time: 'Just now'
+            };
+            db.stories.unshift(newStory);
+            saveDB('stories', newStory);
+            render();
+            showToast('Story published globally for 24 hours!', 'success');
+        }
+
+        function viewStory(id) {
+            const idx = db.stories.findIndex(s => s.id === id);
+            if (idx === -1) return;
+            activeStoryIndex = idx;
+            renderStoryViewerModal();
+        }
+
+        function closeStoryViewer() {
+            activeStoryIndex = null;
+            if (storyProgressTimer) clearTimeout(storyProgressTimer);
+            const modal = document.getElementById('story-viewer-modal');
+            if (modal) {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+                modal.innerHTML = '';
+            }
+        }
+
+        function renderStoryViewerModal() {
+            const modal = document.getElementById('story-viewer-modal');
+            if (!modal || activeStoryIndex === null || !db.stories[activeStoryIndex]) {
+                closeStoryViewer();
+                return;
+            }
+            const story = db.stories[activeStoryIndex];
+            const author = db.users.find(u => u.id === story.userId) || { name: 'User', username: 'user', avatar: FALLBACK_LOGO_SRC };
+            const isVideo = story.mediaType === 'video' || (story.media && story.media.startsWith('data:video'));
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            modal.innerHTML = `
+                <div class="w-full max-w-md bg-slate-900 rounded-3xl overflow-hidden shadow-2xl border border-slate-700 relative flex flex-col max-h-[90vh]">
+                    <!-- Progress bars -->
+                    <div class="flex gap-1 p-3 pb-1 z-20">
+                        ${db.stories.map((_, i) => `
+                            <div class="h-1 flex-1 rounded-full ${i <= activeStoryIndex ? 'bg-violet-500' : 'bg-white/30'}"></div>
+                        `).join('')}
+                    </div>
+                    <!-- Header -->
+                    <div class="px-4 py-2 flex items-center justify-between z-20 text-white">
+                        <div class="flex items-center gap-2.5">
+                            <img src="${author.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-9 h-9 rounded-full object-cover border border-violet-500">
+                            <div>
+                                <div class="text-sm font-bold leading-tight">${author.name}</div>
+                                <div class="text-[11px] text-slate-300">${story.time || 'Just now'}</div>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="downloadPicture('${story.media}', 'ChatNova_Story.jpg')" class="w-8 h-8 rounded-full bg-white/15 hover:bg-violet-600 flex items-center justify-center text-xs" title="Download Story"><i class="fa-solid fa-download"></i></button>
+                            ${story.userId === session.id || session.role === 'admin' ? `<button onclick="deleteStory('${story.id}')" class="w-8 h-8 rounded-full bg-red-600/80 hover:bg-red-600 flex items-center justify-center text-xs" title="Delete Story"><i class="fa-solid fa-trash"></i></button>` : ''}
+                            <button onclick="closeStoryViewer()" class="w-8 h-8 rounded-full bg-white/15 hover:bg-white/30 flex items-center justify-center text-sm"><i class="fa-solid fa-xmark"></i></button>
+                        </div>
+                    </div>
+
+                    <!-- Story Media Canvas -->
+                    <div class="relative flex-1 bg-black flex items-center justify-center min-h-[380px]">
+                        ${isVideo
+                            ? `<video src="${story.media}" controls autoplay class="max-h-[65vh] w-full object-contain"></video>`
+                            : `<img src="${story.media}" class="max-h-[65vh] w-full object-contain">`
+                        }
+                        ${story.caption ? `
+                            <div class="absolute bottom-3 inset-x-4 bg-black/65 backdrop-blur-sm text-white text-xs p-3 rounded-xl text-center">
+                                ${story.caption}
+                            </div>
+                        ` : ''}
+                        ${activeStoryIndex > 0 ? `<button onclick="activeStoryIndex--; renderStoryViewerModal();" class="absolute left-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-violet-600"><i class="fa-solid fa-chevron-left"></i></button>` : ''}
+                        ${activeStoryIndex < db.stories.length - 1 ? `<button onclick="activeStoryIndex++; renderStoryViewerModal();" class="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-violet-600"><i class="fa-solid fa-chevron-right"></i></button>` : ''}
+                    </div>
+
+                    <!-- Story Reply & Quick Reactions -->
+                    <div class="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2">
+                        <input type="text" id="story-reply-input" placeholder="Reply to ${author.name}'s story..." class="flex-1 bg-slate-800 text-white text-xs px-3.5 py-2.5 rounded-full outline-none focus:ring-1 focus:ring-violet-500" onkeydown="if(event.key==='Enter') sendStoryReply('${story.id}', '${author.id}')">
+                        <button onclick="sendStoryReaction('${story.id}', '❤️')" class="text-lg hover:scale-125 transition">❤️</button>
+                        <button onclick="sendStoryReaction('${story.id}', '🔥')" class="text-lg hover:scale-125 transition">🔥</button>
+                        <button onclick="sendStoryReply('${story.id}', '${author.id}')" class="w-9 h-9 rounded-full bg-violet-600 text-white flex items-center justify-center text-xs"><i class="fa-solid fa-paper-plane"></i></button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function deleteStory(storyId) {
+            const target = db.stories.find(s => s.id === storyId);
+            db.stories = db.stories.filter(s => s.id !== storyId);
+            saveDB('stories', target, true);
+            closeStoryViewer();
+            render();
+            showToast('Story deleted.', 'info');
+        }
+
+        function sendStoryReaction(storyId, emoji) {
+            const story = db.stories.find(s => s.id === storyId);
+            if (!story) return;
+            if (!story.reactions) story.reactions = {};
+            story.reactions[session.id] = emoji;
+            saveDB('stories', story);
+            showToast(`Reacted ${emoji} to story!`, 'success');
+        }
+
+        function sendStoryReply(storyId, authorId) {
+            const input = document.getElementById('story-reply-input');
+            const text = input ? input.value.trim() : '';
+            if (!text) return;
+            if (authorId !== session.id) {
+                const msg = {
+                    id: 'm_' + Date.now(),
+                    senderId: session.id,
+                    receiverId: authorId,
+                    text: `[Story Reply] ${text}`,
+                    type: 'text',
+                    reactions: {},
+                    createdAt: Date.now(),
+                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                };
+                db.messages.push(msg);
+                saveDB('messages', msg);
+            }
+            input.value = '';
+            showToast('Reply sent to conversation!', 'success');
+        }
+
+        async function handlePostGalleryUpload(event) {
+            const files = event.target.files;
+            if(files && files.length > 0) {
+                for (const file of Array.from(files)) {
+                    const compressed = await compressImageFile(file, 800, 0.75);
+                    uploadedGalleryImages.push(compressed.dataUrl);
+                }
+                render();
+            }
+        }
+        function removeGalleryImage(index) { uploadedGalleryImages.splice(index, 1); render(); }
+
+        /* ==========================================================
+           TAB 2: CHAT & MESSAGING WITH LIVE TYPING & REAL-TIME SYNC
+           ========================================================== */
+        let typingThrottleTimer = null;
+        function notifyTyping() {
+            if (!activeChatUserId || !window.cloudSync || !window.cloudSync.enabled) return;
+            if (typingThrottleTimer) return;
+            const key = `${session.id}_to_${activeChatUserId}`;
+            window.cloudSync.pushDoc('typing', key, {
+                fromId: session.id,
+                toId: activeChatUserId,
+                name: session.name,
+                updatedAt: Date.now()
+            });
+            typingThrottleTimer = setTimeout(() => { typingThrottleTimer = null; }, 2000);
+        }
+
+        function renderChatTab() {
+            const chatUsers = db.users.filter(u => u.id !== session.id && u.approved);
+            const activeUser = db.users.find(u => u.id === activeChatUserId);
+            
+            let conversation = activeUser ? db.messages.filter(m => (m.senderId === session.id && m.receiverId === activeUser.id) || (m.senderId === activeUser.id && m.receiverId === session.id)) : [];
+            if(chatSearchKeyword) {
+                conversation = conversation.filter(m => m.text.toLowerCase().includes(chatSearchKeyword.toLowerCase()));
+            }
+
+            const currentDraft = (activeChatUserId && draftMessages[activeChatUserId]) ? draftMessages[activeChatUserId] : '';
+            const activePins = pinnedMessages.map(id => db.messages.find(m => m.id === id)).filter(m => m && ((m.senderId === session.id && m.receiverId === activeChatUserId) || (m.senderId === activeChatUserId && m.receiverId === session.id)));
+            const isPeerTyping = activeUser && window.typingStatusMap && window.typingStatusMap[`${activeUser.id}_to_${session.id}`];
+
+            return `
+                <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex h-[calc(100vh-10rem)]">
+                    <!-- Sidebar Contacts -->
+                    <div class="w-full md:w-80 border-r border-slate-200 dark:border-slate-700 flex flex-col ${activeChatUserId ? 'hidden md:flex' : 'flex'}">
+                        <div class="p-4 border-b border-slate-200 dark:border-slate-700">
+                            <h2 class="font-bold text-lg mb-2">Messages</h2>
+                            <input type="text" id="chat-search-user" placeholder="Search conversations..." class="w-full bg-slate-100 dark:bg-slate-700 px-3 py-2 rounded-lg text-sm outline-none focus:ring-1 focus:ring-violet-500">
+                        </div>
+                        <div class="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700">
+                            ${chatUsers.map(user => {
+                                const lastMsg = db.messages.filter(m => (m.senderId === session.id && m.receiverId === user.id) || (m.senderId === user.id && m.receiverId === session.id)).pop();
+                                return `
+                                    <div onclick="selectChatUser('${user.id}')" class="p-3 flex items-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50 transition ${activeChatUserId === user.id ? 'bg-violet-50 dark:bg-slate-700' : ''}">
+                                        <div class="relative">
+                                            <img src="${user.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-12 h-12 rounded-full object-cover">
+                                            <span class="absolute bottom-0 right-0 w-3.5 h-3.5 ${user.isOnline ? 'bg-emerald-500' : 'bg-slate-400'} border-2 border-white dark:border-slate-800 rounded-full"></span>
+                                        </div>
+                                        <div class="flex-1 min-w-0">
+                                            <div class="flex items-center justify-between mb-0.5">
+                                                <h4 class="font-bold text-sm truncate">${user.name}</h4>
+                                                <span class="text-[10px] text-slate-400">${lastMsg ? lastMsg.time : ''}</span>
+                                            </div>
+                                            <p class="text-xs text-slate-500 dark:text-slate-400 truncate">${lastMsg ? (lastMsg.type === 'voice' ? '🎤 Voice note' : lastMsg.text) : 'Tap to chat globally'}</p>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+
+                    <!-- Chat Window -->
+                    <div class="flex-1 flex flex-col bg-slate-50 dark:bg-slate-900 ${!activeChatUserId ? 'hidden md:flex' : 'flex'}">
+                        ${activeUser ? `
+                            <!-- Chat Header -->
+                            <div class="bg-white dark:bg-slate-800 p-3 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                                <div class="flex items-center gap-3">
+                                    <button onclick="activeChatUserId = null; render();" class="md:hidden text-slate-500 mr-2"><i class="fa-solid fa-arrow-left text-lg"></i></button>
+                                    <img src="${activeUser.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-10 h-10 rounded-full object-cover">
+                                    <div>
+                                        <h3 class="font-bold text-sm">${activeUser.name}</h3>
+                                        <span class="text-xs ${isPeerTyping ? 'text-violet-600 font-semibold animate-pulse' : (activeUser.isOnline ? 'text-emerald-500 font-medium' : 'text-slate-400')}">
+                                            ${isPeerTyping ? 'Typing...' : (activeUser.isOnline ? 'Online' : `Last seen ${activeUser.lastSeen}`)}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <input type="text" id="msg-keyword-search" placeholder="Search keyword..." value="${chatSearchKeyword}" oninput="chatSearchKeyword = this.value; render();" class="bg-slate-100 dark:bg-slate-700 px-3 py-1.5 rounded-lg text-xs outline-none w-36 sm:w-48">
+                                    <button onclick="toggleDisappearingTimer()" title="Disappearing Messages" class="w-9 h-9 rounded-full ${disappearingTimerMode > 0 ? 'bg-violet-600 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-600'} flex items-center justify-center text-xs"><i class="fa-solid fa-stopwatch"></i></button>
+                                </div>
+                            </div>
+
+                            <!-- Pinned Messages Banner -->
+                            ${activePins.length > 0 ? `
+                                <div class="bg-violet-50 dark:bg-violet-950/40 px-4 py-2 border-b border-violet-100 flex items-center justify-between text-xs">
+                                    <div class="flex items-center gap-2 truncate">
+                                        <i class="fa-solid fa-thumbtack text-violet-600"></i>
+                                        <span class="font-bold text-violet-700">Pinned:</span>
+                                        <span class="text-slate-600 truncate">${activePins[activePins.length - 1].text}</span>
+                                    </div>
+                                    <button onclick="unpinMessage('${activePins[activePins.length - 1].id}')" class="text-slate-400 hover:text-red-500"><i class="fa-solid fa-xmark"></i></button>
+                                </div>
+                            ` : ''}
+
+                            <!-- Messages Scroll Stream -->
+                            <div class="flex-1 p-4 overflow-y-auto space-y-3" id="chat-messages-scroll">
+                                ${conversation.length === 0 ? `<div class="text-center text-slate-400 my-auto text-sm">No messages yet. Say hello to ${activeUser.name}! 👋</div>` : ''}
+                                ${conversation.map(msg => {
+                                    const isMe = msg.senderId === session.id;
+                                    const quotedMsg = msg.replyTo ? db.messages.find(m => m.id === msg.replyTo) : null;
+                                    return `
+                                        <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'}">
+                                            <div class="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm relative group shadow-sm ${isMe ? 'bg-violet-600 text-white rounded-br-none' : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 rounded-bl-none'}">
+                                                
+                                                ${quotedMsg ? `
+                                                    <div class="mb-2 p-2 rounded-lg bg-black/10 text-xs border-l-2 border-white">
+                                                        <span class="font-bold block">${quotedMsg.senderId === session.id ? 'You' : activeUser.name}</span>
+                                                        <span class="truncate">${quotedMsg.text}</span>
+                                                    </div>
+                                                ` : ''}
+
+                                                ${msg.type === 'voice' ? `
+                                                    <div class="flex items-center gap-3">
+                                                        <button onclick="playVoiceNote('${msg.mediaId}')" class="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center"><i class="fa-solid fa-play"></i></button>
+                                                        <div class="text-xs font-mono">Voice Message (0:12)</div>
+                                                    </div>
+                                                ` : msg.type === 'image' ? `
+                                                    <div class="relative group/img mb-1">
+                                                        <img src="${msg.media}" class="max-w-xs rounded-lg object-cover">
+                                                        <button onclick="downloadPicture('${msg.media}', 'Chat_Image.jpg')" class="absolute bottom-2 right-2 bg-black/70 hover:bg-violet-600 text-white px-2.5 py-1 rounded-lg text-[10px] font-semibold flex items-center gap-1 shadow"><i class="fa-solid fa-download"></i> Download</button>
+                                                    </div>
+                                                    <p>${msg.text}</p>
+                                                ` : `
+                                                    <p class="whitespace-pre-line">${msg.text}</p>
+                                                `}
+
+                                                ${msg.reactions && Object.keys(msg.reactions).length > 0 ? `
+                                                    <div class="absolute -bottom-2 ${isMe ? 'left-2' : 'right-2'} bg-white dark:bg-slate-700 shadow border rounded-full px-2 py-0.5 flex gap-1 text-xs">
+                                                        ${Object.values(msg.reactions).join(' ')}
+                                                    </div>
+                                                ` : ''}
+
+                                                <div class="text-[10px] ${isMe ? 'text-violet-200' : 'text-slate-400'} text-right mt-1 flex items-center justify-end gap-2">
+                                                    <span>${msg.time}</span>
+                                                    ${isMe ? '<i class="fa-solid fa-check-double text-emerald-400" title="Seen"></i>' : ''}
+                                                    
+                                                    <div class="opacity-0 group-hover:opacity-100 transition flex items-center gap-1.5 ml-1">
+                                                        <button onclick="setReplyMessage('${msg.id}')" title="Reply"><i class="fa-solid fa-reply"></i></button>
+                                                        <button onclick="forwardMessage('${msg.id}')" title="Forward"><i class="fa-solid fa-share"></i></button>
+                                                        <button onclick="pinMessage('${msg.id}')" title="Pin"><i class="fa-solid fa-thumbtack"></i></button>
+                                                        <button onclick="textToSpeech('${msg.text}')" title="Read Aloud"><i class="fa-solid fa-volume-high"></i></button>
+                                                        <button onclick="translateMessage('${msg.id}')" title="Translate"><i class="fa-solid fa-language"></i></button>
+                                                        ${isMe ? `<button onclick="editMessage('${msg.id}')" title="Edit"><i class="fa-solid fa-pen"></i></button>` : ''}
+                                                        <button onclick="deleteMessage('${msg.id}')" title="Delete"><i class="fa-solid fa-trash"></i></button>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div class="flex gap-1 mt-1 text-xs opacity-80 hover:opacity-100 transition">
+                                                <button onclick="reactMessage('${msg.id}', '❤️')" class="hover:scale-125 transition">❤️</button>
+                                                <button onclick="reactMessage('${msg.id}', '😂')" class="hover:scale-125 transition">😂</button>
+                                                <button onclick="reactMessage('${msg.id}', '👍')" class="hover:scale-125 transition">👍</button>
+                                                <button onclick="reactMessage('${msg.id}', '😮')" class="hover:scale-125 transition">😮</button>
+                                                <button onclick="reactMessage('${msg.id}', '🔥')" class="hover:scale-125 transition">🔥</button>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+
+                            ${replyToMsgId ? (() => {
+                                const rMsg = db.messages.find(m => m.id === replyToMsgId);
+                                return rMsg ? `
+                                    <div class="bg-violet-100 dark:bg-slate-700 px-4 py-2 flex items-center justify-between text-xs border-t">
+                                        <div class="flex items-center gap-2 truncate">
+                                            <i class="fa-solid fa-reply text-violet-600"></i>
+                                            <span class="font-bold">Replying to:</span>
+                                            <span class="truncate">${rMsg.text}</span>
+                                        </div>
+                                        <button onclick="replyToMsgId = null; render();" class="text-slate-500 hover:text-red-500"><i class="fa-solid fa-xmark"></i></button>
+                                    </div>
+                                ` : '';
+                            })() : ''}
+
+                            <div class="bg-white dark:bg-slate-800 p-3 border-t border-slate-200 dark:border-slate-700 flex items-center gap-2">
+                                <label class="cursor-pointer text-slate-500 hover:text-violet-600 p-2"><i class="fa-solid fa-paperclip text-lg"></i><input type="file" id="chat-file-input" class="hidden" onchange="sendChatAttachment(event)"></label>
+                                <button onclick="startVoiceRecording()" class="text-slate-500 hover:text-violet-600 p-2" title="Voice Recording"><i class="fa-solid fa-microphone text-lg"></i></button>
+                                <button onclick="scheduleMessagePrompt()" class="text-slate-500 hover:text-violet-600 p-2" title="Schedule Message"><i class="fa-solid fa-clock"></i></button>
+                                <input type="text" id="chat-message-input" placeholder="Type a message..." value="${currentDraft}" oninput="saveDraft(this.value); notifyTyping();" class="flex-1 bg-slate-100 dark:bg-slate-700 px-4 py-2.5 rounded-full text-sm outline-none focus:ring-2 focus:ring-violet-500" onkeydown="if(event.key==='Enter') sendChatMessage()">
+                                <button onclick="sendChatMessage()" class="w-10 h-10 bg-violet-600 hover:bg-violet-700 text-white rounded-full flex items-center justify-center shadow transition"><i class="fa-solid fa-paper-plane"></i></button>
+                            </div>
+                        ` : `
+                            <div class="flex-1 flex flex-col items-center justify-center text-slate-400 p-6">
+                                <div class="w-20 h-20 bg-violet-50 dark:bg-slate-800 rounded-full flex items-center justify-center text-violet-500 text-3xl mb-3 shadow"><i class="fa-solid fa-comments"></i></div>
+                                <h3 class="font-bold text-lg text-slate-700 dark:text-slate-200">Select a conversation</h3>
+                                <p class="text-xs text-slate-400 mt-1">Choose any global user from the sidebar to chat in real time.</p>
+                            </div>
+                        `}
+                    </div>
+                </div>
+            `;
+        }
+
+        function selectChatUser(userId) {
+            activeChatUserId = userId;
+            replyToMsgId = null;
+            chatSearchKeyword = '';
+            render();
+            setTimeout(() => {
+                const sc = document.getElementById('chat-messages-scroll');
+                if (sc) sc.scrollTop = sc.scrollHeight;
+            }, 40);
+        }
+        function saveDraft(val) { if(activeChatUserId) { draftMessages[activeChatUserId] = val; localStorage.setItem('cn_drafts', JSON.stringify(draftMessages)); } }
+
+        function sendChatMessage() {
+            const input = document.getElementById('chat-message-input');
+            const text = input ? input.value.trim() : '';
+            if(!text || !activeChatUserId) return;
+
+            const newMsg = {
+                id: 'm_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+                senderId: session.id,
+                receiverId: activeChatUserId,
+                text,
+                type: 'text',
+                replyTo: replyToMsgId,
+                reactions: {},
+                createdAt: Date.now(),
+                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            };
+
+            if(navigator.onLine) {
+                db.messages.push(newMsg);
+                playNotificationSound();
+                saveDB('messages', newMsg);
+                if (disappearingTimerMode > 0) {
+                    setTimeout(() => deleteMessage(newMsg.id), disappearingTimerMode * 1000);
+                }
+            } else {
+                db.offlineQueue.push(newMsg);
+                saveDB();
+                showToast('Offline: Message queued for sync.', 'error');
+            }
+
+            if(activeChatUserId) delete draftMessages[activeChatUserId];
+            replyToMsgId = null;
+            render();
+            setTimeout(() => {
+                const sc = document.getElementById('chat-messages-scroll');
+                if (sc) sc.scrollTop = sc.scrollHeight;
+            }, 40);
+        }
+
+        async function sendChatAttachment(e) {
+            const file = e.target.files[0];
+            if(!file || !activeChatUserId) return;
+            const compressed = await compressImageFile(file, 720, 0.72);
+            const newMsg = {
+                id: 'm_' + Date.now(),
+                senderId: session.id,
+                receiverId: activeChatUserId,
+                text: file.name,
+                media: compressed.dataUrl,
+                type: file.type.startsWith('image') ? 'image' : 'file',
+                reactions: {},
+                createdAt: Date.now(),
+                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            };
+            db.messages.push(newMsg);
+            saveDB('messages', newMsg);
+            render();
+        }
+
+        let mediaRecorder = null;
+        let audioChunks = [];
+        async function startVoiceRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                mediaRecorder.ondataavailable = event => audioChunks.push(event.data);
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const mediaId = 'audio_' + Date.now();
+                    await saveBlobToIDB(mediaId, audioBlob);
+
+                    const newMsg = {
+                        id: 'm_' + Date.now(),
+                        senderId: session.id,
+                        receiverId: activeChatUserId,
+                        text: 'Voice message',
+                        mediaId,
+                        type: 'voice',
+                        reactions: {},
+                        createdAt: Date.now(),
+                        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    };
+                    db.messages.push(newMsg);
+                    saveDB('messages', newMsg);
+                    render();
+                    showToast('Voice message sent!', 'success');
+                };
+                mediaRecorder.start();
+                showToast('Recording voice note...', 'info');
+                setTimeout(() => {
+                    if(mediaRecorder && mediaRecorder.state === 'recording') {
+                        mediaRecorder.stop();
+                        stream.getTracks().forEach(t => t.stop());
+                    }
+                }, 6000);
+            } catch(err) {
+                showToast('Microphone access denied.', 'error');
+            }
+        }
+
+        async function playVoiceNote(mediaId) {
+            const blob = await getBlobFromIDB(mediaId);
+            if(blob) {
+                const audio = new Audio(URL.createObjectURL(blob));
+                audio.play();
+                showToast('Playing voice message...');
+            } else {
+                showToast('Voice blob not found.', 'error');
+            }
+        }
+
+        function setReplyMessage(msgId) { replyToMsgId = msgId; render(); }
+        function forwardMessage(msgId) {
+            const msg = db.messages.find(m => m.id === msgId);
+            const target = prompt('Enter exact username to forward to:');
+            const found = db.users.find(u => u.username.toLowerCase() === (target || '').toLowerCase());
+            if(found && msg) {
+                const fwd = {
+                    id: 'm_' + Date.now(),
+                    senderId: session.id,
+                    receiverId: found.id,
+                    text: `[Forwarded] ${msg.text}`,
+                    type: msg.type,
+                    reactions: {},
+                    createdAt: Date.now(),
+                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                };
+                db.messages.push(fwd);
+                saveDB('messages', fwd);
+                showToast('Message forwarded!', 'success');
+            } else {
+                showToast('User not found.', 'error');
+            }
+        }
+        function pinMessage(msgId) { if(!pinnedMessages.includes(msgId)) { pinnedMessages.push(msgId); saveDB(); render(); showToast('Pinned!', 'success'); } }
+        function unpinMessage(msgId) { pinnedMessages = pinnedMessages.filter(id => id !== msgId); saveDB(); render(); }
+        function editMessage(msgId) {
+            const msg = db.messages.find(m => m.id === msgId);
+            const nt = prompt('Edit message:', msg.text);
+            if(nt !== null) { msg.text = nt + ' (edited)'; saveDB('messages', msg); render(); }
+        }
+        function deleteMessage(msgId) {
+            const target = db.messages.find(m => m.id === msgId);
+            db.messages = db.messages.filter(m => m.id !== msgId);
+            saveDB('messages', target, true);
+            render();
+        }
+        function reactMessage(msgId, emoji) {
+            const msg = db.messages.find(m => m.id === msgId);
+            if(msg) { msg.reactions[session.id] = emoji; saveDB('messages', msg); render(); }
+        }
+        function textToSpeech(text) {
+            if('speechSynthesis' in window) {
+                window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+                showToast('Reading aloud...');
+            }
+        }
+        function translateMessage(msgId) {
+            const msg = db.messages.find(m => m.id === msgId);
+            if(msg) { msg.text = `[Translated (${currentLang.toUpperCase()})] ${msg.text}`; saveDB('messages', msg); render(); showToast('Translated!', 'success'); }
+        }
+        function scheduleMessagePrompt() {
+            const delay = prompt('Delay in seconds:', '10');
+            const txt = prompt('Message text:', 'Reminder');
+            if(delay && txt && activeChatUserId) {
+                showToast(`Scheduled for ${delay}s.`, 'success');
+                setTimeout(() => {
+                    const sched = {
+                        id: 'm_' + Date.now(),
+                        senderId: session.id,
+                        receiverId: activeChatUserId,
+                        text: `[Scheduled] ${txt}`,
+                        type: 'text',
+                        reactions: {},
+                        createdAt: Date.now(),
+                        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    };
+                    db.messages.push(sched);
+                    saveDB('messages', sched);
+                    render();
+                    showToast('Scheduled message delivered!', 'success');
+                }, parseInt(delay) * 1000);
+            }
+        }
+        function toggleDisappearingTimer() {
+            disappearingTimerMode = disappearingTimerMode === 0 ? 60 : 0;
+            showToast(`Disappearing mode ${disappearingTimerMode > 0 ? 'On (60s)' : 'Off'}`, 'success');
+            render();
+        }
+
+        /* ==========================================================
+           TAB 3: FRIENDS & COMMUNITY
+           ========================================================== */
+        function renderFriendsTab() {
+            const allUsers = db.users.filter(u => u.id !== session.id && u.approved);
+            const requests = db.friendRequests.filter(r => r.toId === session.id && r.status === 'pending');
+
+            return `
+                <div class="space-y-6">
+                    ${requests.length > 0 ? `
+                        <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700">
+                            <h3 class="font-bold text-base mb-4"><i class="fa-solid fa-user-plus text-violet-600"></i> Friend Requests (${requests.length})</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                ${requests.map(req => {
+                                    const fromUser = db.users.find(u => u.id === req.fromId) || { name: 'User', avatar: FALLBACK_LOGO_SRC };
+                                    return `
+                                        <div class="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl flex items-center justify-between">
+                                            <div class="flex items-center gap-3">
+                                                <img src="${fromUser.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-12 h-12 rounded-full object-cover">
+                                                <div><div class="font-bold text-sm">${fromUser.name}</div><div class="text-xs text-slate-400">@${fromUser.username}</div></div>
+                                            </div>
+                                            <div class="flex gap-2">
+                                                <button onclick="acceptFriendRequest('${req.id}')" class="w-9 h-9 bg-emerald-600 text-white rounded-full flex items-center justify-center"><i class="fa-solid fa-check"></i></button>
+                                                <button onclick="rejectFriendRequest('${req.id}')" class="w-9 h-9 bg-red-100 text-red-600 rounded-full flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700">
+                        <h3 class="font-bold text-base mb-4"><i class="fa-solid fa-globe text-violet-600"></i> Global Community (${allUsers.length} Connected Users)</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            ${allUsers.map(user => {
+                                const isFriend = session.friends.includes(user.id);
+                                const isFollowing = session.following.includes(user.id);
+                                return `
+                                    <div class="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl flex flex-col items-center text-center">
+                                        <div class="relative">
+                                            <img src="${user.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-20 h-20 rounded-full object-cover mb-3 border-2 border-violet-600 shadow">
+                                            <span class="absolute bottom-3 right-1 w-4 h-4 ${user.isOnline ? 'bg-emerald-500' : 'bg-slate-400'} border-2 border-white rounded-full"></span>
+                                        </div>
+                                        <h4 class="font-bold text-base">${user.name} ${user.verified ? '<i class="fa-solid fa-circle-check text-violet-600 text-xs"></i>' : ''}</h4>
+                                        <p class="text-xs text-slate-400 mb-2">@${user.username} • ${user.phone}</p>
+                                        <p class="text-xs text-slate-600 dark:text-slate-300 mb-4 line-clamp-2">${user.bio}</p>
+                                        <div class="flex gap-2 w-full">
+                                            <button onclick="selectChatUser('${user.id}'); switchTab('chat');" class="px-3 py-2 bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg text-xs font-semibold hover:bg-violet-600 hover:text-white transition"><i class="fa-solid fa-comments"></i> Chat</button>
+                                            <button onclick="toggleFollow('${user.id}')" class="flex-1 py-2 rounded-lg text-xs font-semibold ${isFollowing ? 'bg-slate-200 text-slate-700' : 'bg-violet-600 text-white shadow'}">${isFollowing ? 'Following' : 'Follow'}</button>
+                                            ${!isFriend ? `<button onclick="sendFriendRequest('${user.id}')" class="px-3 py-2 bg-violet-50 text-violet-600 rounded-lg text-xs font-semibold">Add</button>` : `<span class="px-3 py-2 bg-emerald-50 text-emerald-600 rounded-lg text-xs font-semibold">Friend</span>`}
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function sendFriendRequest(toId) {
+            const fr = { id: 'fr_' + Date.now(), fromId: session.id, toId, status: 'pending' };
+            const notif = { id: 'n_' + Date.now(), userId: toId, text: `${session.name} sent you a friend request.`, read: false, time: 'Just now' };
+            db.friendRequests.push(fr);
+            db.notifications.push(notif);
+            saveDB('friendRequests', fr);
+            saveDB('notifications', notif);
+            render();
+            showToast('Friend request sent!', 'success');
+        }
+        function acceptFriendRequest(reqId) {
+            const req = db.friendRequests.find(r => r.id === reqId);
+            if(req) {
+                req.status = 'accepted';
+                const u1 = db.users.find(u => u.id === req.fromId);
+                const u2 = db.users.find(u => u.id === req.toId);
+                if(u1 && u2) {
+                    if (!u1.friends.includes(u2.id)) u1.friends.push(u2.id);
+                    if (!u2.friends.includes(u1.id)) u2.friends.push(u1.id);
+                    saveDB('users', u1);
+                    saveDB('users', u2);
+                }
+                saveDB('friendRequests', req);
+                render();
+                showToast('Friend request accepted!', 'success');
+            }
+        }
+        function rejectFriendRequest(reqId) {
+            const req = db.friendRequests.find(r => r.id === reqId);
+            db.friendRequests = db.friendRequests.filter(r => r.id !== reqId);
+            saveDB('friendRequests', req, true);
+            render();
+        }
+        function toggleFollow(userId) {
+            if(session.following.includes(userId)) session.following = session.following.filter(id => id !== userId);
+            else session.following.push(userId);
+            saveDB('users', session);
+            render();
+        }
+        function toggleBookmarkPost(postId) {
+            const p = db.posts.find(x => x.id === postId);
+            if(p) {
+                if(!p.bookmarks) p.bookmarks = [];
+                if(p.bookmarks.includes(session.id)) p.bookmarks = p.bookmarks.filter(id => id !== session.id);
+                else p.bookmarks.push(session.id);
+                saveDB('posts', p);
+                render();
+                showToast('Bookmarks updated');
+            }
+        }
+
+        /* ==========================================================
+           TAB 4: USER PROFILE
+           ========================================================== */
+        function renderProfileTab() {
+            return `
+                <div class="space-y-6">
+                    <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                        <div class="h-48 relative bg-violet-600"><img src="${session.cover}" class="w-full h-full object-cover"></div>
+                        <div class="px-6 pb-6 relative flex flex-col sm:flex-row items-center sm:items-end justify-between -mt-16 gap-4">
+                            <div class="flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+                                <img src="${session.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-28 h-28 rounded-full object-cover border-4 border-white dark:border-slate-800 shadow-lg">
+                                <div class="mt-2 sm:mt-12">
+                                    <h2 class="text-xl font-bold flex items-center gap-1">${session.name} ${session.verified ? '<i class="fa-solid fa-circle-check text-violet-600"></i>' : ''}</h2>
+                                    <p class="text-sm text-slate-500">@${session.username} • Phone: <span class="font-mono">${session.phone}</span></p>
+                                </div>
+                            </div>
+                            <div class="flex gap-2">
+                                <label class="px-4 py-2 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-white rounded-xl text-sm font-semibold cursor-pointer hover:bg-slate-200 transition">
+                                    Change Photo
+                                    <input type="file" class="hidden" accept="image/*" onchange="handleProfileAvatarUpload(event)">
+                                </label>
+                                <button onclick="openEditProfileModal()" class="px-4 py-2 bg-violet-600 text-white rounded-xl text-sm font-semibold shadow">Edit Bio</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700">
+                            <h3 class="font-bold text-base mb-3">About & Bio</h3>
+                            <p class="text-sm text-slate-600 dark:text-slate-300 mb-4">${session.bio}</p>
+                            <div class="space-y-2 text-xs text-slate-500 border-t pt-3">
+                                <div class="flex justify-between"><span>Friends</span><span class="font-bold">${session.friends.length}</span></div>
+                                <div class="flex justify-between"><span>Following</span><span class="font-bold">${session.following.length}</span></div>
+                            </div>
+                        </div>
+
+                        <div class="lg:col-span-2 space-y-4">
+                            <h3 class="font-bold text-lg">My Posts</h3>
+                            ${db.posts.filter(p => p.authorId === session.id).map(post => `
+                                <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700">
+                                    <p class="text-sm mb-3">${post.content}</p>
+                                    ${post.image ? `
+                                        <div class="relative mb-3 rounded-xl overflow-hidden">
+                                            <img src="${post.image}" class="w-full max-h-64 object-cover">
+                                            <button onclick="downloadPicture('${post.image}', 'Post.jpg')" class="absolute bottom-2 right-2 bg-black/70 text-white px-3 py-1 rounded-lg text-xs font-semibold"><i class="fa-solid fa-download"></i> Download</button>
+                                        </div>
+                                    ` : ''}
+                                    <div class="flex justify-between text-xs text-slate-400">
+                                        <span>${post.time}</span>
+                                        <button onclick="deletePost('${post.id}')" class="text-red-500 font-semibold">Delete</button>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function handleProfileAvatarUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const compressed = await compressImageFile(file, 300, 0.8);
+            session.avatar = compressed.dataUrl;
+            const meInDb = db.users.find(u => u.id === session.id);
+            if (meInDb) meInDb.avatar = session.avatar;
+            saveDB('users', session);
+            render();
+            showToast('Profile picture updated globally!', 'success');
+        }
+
+        function openEditProfileModal() {
+            const nb = prompt('Update Bio:', session.bio);
+            if(nb !== null) {
+                session.bio = nb;
+                const meInDb = db.users.find(u => u.id === session.id);
+                if (meInDb) meInDb.bio = nb;
+                saveDB('users', session);
+                render();
+                showToast('Profile updated!', 'success');
+            }
+        }
+
+        /* ==========================================================
+           TAB 5 & 6: NOTIFICATIONS & SETTINGS (7+ Languages)
+           ========================================================== */
+        function renderNotificationsTab() {
+            const userNotifs = db.notifications.filter(n => n.userId === session.id);
+            return `
+                <div class="max-w-2xl mx-auto bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-700 space-y-4">
+                    <div class="flex items-center justify-between pb-3 border-b">
+                        <h2 class="font-bold text-lg">Notifications</h2>
+                        <button onclick="db.notifications = db.notifications.filter(n => n.userId !== session.id); saveDB(); render();" class="text-xs text-violet-600 font-semibold">Clear all</button>
+                    </div>
+                    <div class="space-y-3">
+                        ${userNotifs.length === 0 ? `<div class="text-center text-slate-400 py-8">No notifications.</div>` : ''}
+                        ${userNotifs.map(n => `
+                            <div class="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900 flex items-center justify-between">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-full bg-violet-100 text-violet-600 flex items-center justify-center font-bold"><i class="fa-solid fa-bell"></i></div>
+                                    <div><p class="text-sm font-medium">${n.text}</p><span class="text-[10px] text-slate-400">${n.time}</span></div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderSettingsTab() {
+            return `
+                <div class="max-w-2xl mx-auto bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-700 space-y-6">
+                    <h2 class="text-xl font-bold border-b pb-3">Settings</h2>
+                    <div class="space-y-4 text-sm">
+                        <div class="flex items-center justify-between py-2 border-b">
+                            <div><h4 class="font-semibold">Dark Theme</h4><p class="text-xs text-slate-400">Toggle dark mode</p></div>
+                            <input type="checkbox" ${isDarkMode ? 'checked' : ''} onchange="isDarkMode = !isDarkMode; localStorage.setItem('cn_dark', isDarkMode); document.documentElement.classList.toggle('dark', isDarkMode); render();" class="w-5 h-5 accent-violet-600">
+                        </div>
+                        <div class="flex items-center justify-between py-2 border-b">
+                            <div><h4 class="font-semibold">Data-Saving Mode</h4><p class="text-xs text-slate-400">Optimize bandwidth</p></div>
+                            <input type="checkbox" ${dataSavingMode ? 'checked' : ''} onchange="dataSavingMode = !dataSavingMode; showToast('Data saving mode toggled');" class="w-5 h-5 accent-violet-600">
+                        </div>
+                        <div class="flex items-center justify-between py-2 border-b">
+                            <div><h4 class="font-semibold">Install ChatNova App</h4><p class="text-xs text-slate-400">Install on home screen with official logo</p></div>
+                            <button onclick="installPWA()" class="px-4 py-2 bg-violet-600 text-white rounded-xl text-xs font-semibold shadow">Install PWA</button>
+                        </div>
+                        <div class="py-2 border-b">
+                            <h4 class="font-semibold mb-1">Language (7+ Supported)</h4>
+                            <select id="lang-select" onchange="currentLang = this.value; localStorage.setItem('cn_lang', currentLang); render(); showToast('Language switched');" class="w-full bg-slate-100 dark:bg-slate-700 p-2.5 rounded-lg text-sm outline-none">
+                                <option value="en" ${currentLang==='en'?'selected':''}>English</option>
+                                <option value="fr" ${currentLang==='fr'?'selected':''}>Français (French)</option>
+                                <option value="rw" ${currentLang==='rw'?'selected':''}>Kinyarwanda</option>
+                                <option value="es" ${currentLang==='es'?'selected':''}>Español (Spanish)</option>
+                                <option value="sw" ${currentLang==='sw'?'selected':''}>Kiswahili (Swahili)</option>
+                                <option value="ar" ${currentLang==='ar'?'selected':''}>العربية (Arabic)</option>
+                                <option value="de" ${currentLang==='de'?'selected':''}>Deutsch (German)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        /* ==========================================================
+           TAB 7: ADMIN USER MANAGEMENT & APPROVAL PORTAL
+           ========================================================== */
+        function renderAdminTab() {
+            const pendingUsers = db.users.filter(u => !u.approved);
+            const allUsers = db.users;
+
+            return `
+                <div class="space-y-6">
+                    <div class="bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded-2xl p-6 shadow-lg">
+                        <h2 class="text-2xl font-bold mb-1"><i class="fa-solid fa-shield-halved"></i> Admin User Management Portal</h2>
+                        <p class="text-sm text-amber-100">Manage global registered users, verification badges, and account status across all devices.</p>
+                    </div>
+
+                    ${pendingUsers.length > 0 ? `
+                    <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700">
+                        <h3 class="font-bold text-base mb-4"><i class="fa-solid fa-user-clock text-amber-500"></i> Pending Registrations (${pendingUsers.length})</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            ${pendingUsers.map(u => `
+                                <div class="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border flex items-center justify-between">
+                                    <div class="flex items-center gap-3">
+                                        <img src="${u.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-12 h-12 rounded-full object-cover">
+                                        <div><div class="font-bold text-sm">${u.name}</div><div class="text-xs text-slate-400">@${u.username} • ${u.phone}</div></div>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button onclick="approveUser('${u.id}')" class="px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-semibold shadow">Approve</button>
+                                        <button onclick="rejectUser('${u.id}')" class="px-3 py-2 bg-red-100 text-red-600 rounded-lg text-xs font-semibold">Reject</button>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    ` : ''}
+
+                    <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-200 dark:border-slate-700">
+                        <h3 class="font-bold text-base mb-4"><i class="fa-solid fa-users text-violet-600"></i> All Global Platform Users (${allUsers.length})</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-sm">
+                                <thead class="bg-slate-50 dark:bg-slate-900 text-slate-500 uppercase text-[10px]">
+                                    <tr><th class="p-3">User</th><th class="p-3">Phone</th><th class="p-3">Role</th><th class="p-3">Status</th><th class="p-3 text-right">Actions</th></tr>
+                                </thead>
+                                <tbody class="divide-y">
+                                    ${allUsers.map(user => `
+                                        <tr>
+                                            <td class="p-3 flex items-center gap-3">
+                                                <img src="${user.avatar}" onerror="this.src='${FALLBACK_LOGO_SRC}'" class="w-8 h-8 rounded-full object-cover">
+                                                <div><div class="font-bold">${user.name} ${user.verified ? '<i class="fa-solid fa-circle-check text-violet-600 text-xs"></i>' : ''}</div><div class="text-xs text-slate-400">@${user.username}</div></div>
+                                            </td>
+                                            <td class="p-3 font-mono text-xs">${user.phone}</td>
+                                            <td class="p-3"><span class="px-2 py-1 bg-violet-50 text-violet-600 text-xs rounded-md font-semibold">${user.role}</span></td>
+                                            <td class="p-3"><span class="px-2 py-1 ${user.approved ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'} text-xs rounded-md font-semibold">${user.approved ? 'Active' : 'Suspended'}</span></td>
+                                            <td class="p-3 text-right space-x-2">
+                                                ${user.id !== session.id ? `
+                                                    <button onclick="toggleVerifyUser('${user.id}')" class="text-violet-600 hover:underline text-xs font-semibold">${user.verified ? 'Unverify' : 'Verify'}</button>
+                                                    <button onclick="toggleApproveUser('${user.id}')" class="text-amber-600 hover:underline text-xs font-semibold">${user.approved ? 'Suspend' : 'Approve'}</button>
+                                                    <button onclick="deleteUser('${user.id}')" class="text-red-500 hover:text-red-700 text-xs font-semibold">Delete</button>
+                                                ` : '<span class="text-xs text-slate-400">Admin</span>'}
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function approveUser(userId) {
+            const user = db.users.find(u => u.id === userId);
+            if(user) {
+                user.approved = true;
+                const notif = { id: 'n_' + Date.now(), userId: user.id, text: `Your ChatNova account is active!`, read: false, time: 'Just now' };
+                db.notifications.push(notif);
+                saveDB('users', user);
+                saveDB('notifications', notif);
+                render();
+                showToast(`User @${user.username} approved!`, 'success');
+            }
+        }
+        function toggleApproveUser(userId) {
+            const user = db.users.find(u => u.id === userId);
+            if(user) {
+                user.approved = !user.approved;
+                saveDB('users', user);
+                render();
+                showToast(`User @${user.username} status updated.`, 'info');
+            }
+        }
+        function toggleVerifyUser(userId) {
+            const user = db.users.find(u => u.id === userId);
+            if(user) {
+                user.verified = !user.verified;
+                saveDB('users', user);
+                render();
+                showToast(`Verification badge updated for @${user.username}`, 'success');
+            }
+        }
+        function rejectUser(userId) {
+            const target = db.users.find(u => u.id === userId);
+            db.users = db.users.filter(u => u.id !== userId);
+            saveDB('users', target, true);
+            render();
+            showToast('User rejected.');
+        }
+        function deleteUser(userId) {
+            const target = db.users.find(u => u.id === userId);
+            db.users = db.users.filter(u => u.id !== userId);
+            saveDB('users', target, true);
+            render();
+            showToast('User deleted.');
+        }
+
+        /* ==========================================================
+           GLOBAL SEARCH & EVENT ATTACHMENTS
+           ========================================================== */
+        function handleGlobalSearch(e) {
+            const query = e.target.value.toLowerCase().trim().replace(/^@/, '');
+            if(!query) return;
+            const found = db.users.find(u => (u.username.toLowerCase() === query || u.name.toLowerCase() === query) && u.approved);
+            if(found && found.id !== session.id) {
+                activeChatUserId = found.id;
+                currentTab = 'chat';
+                window.currentTab = 'chat';
+                render();
+                showToast(`Opened chat with @${found.username}`, 'success');
+            }
+        }
+
+        function attachMainEvents() {
+            if (currentTab === 'verification') {
+                attachVerificationEvents();
+                if (vToken()) vLoad();
+            }
+            document.getElementById('logout-btn')?.addEventListener('click', () => {
+                session.isOnline = false;
+                saveDB('users', session);
+                session = null;
+                window.session = null;
+                localStorage.removeItem('cn_ultimate_session');
+                render();
+                showToast('Logged out');
+            });
+            document.getElementById('theme-toggle')?.addEventListener('click', () => {
+                isDarkMode = !isDarkMode; localStorage.setItem('cn_dark', isDarkMode); document.documentElement.classList.toggle('dark', isDarkMode); render();
+            });
+            document.getElementById('create-post-form')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const textInput = document.getElementById('post-text-input');
+                const content = textInput ? textInput.value.trim() : '';
+                if(!content && uploadedGalleryImages.length === 0) return;
+
+                const newPost = {
+                    id: 'p_' + Date.now(),
+                    authorId: session.id,
+                    createdAt: Date.now(),
+                    content,
+                    image: uploadedGalleryImages.length > 0 ? uploadedGalleryImages[0] : '',
+                    likes: [],
+                    comments: [],
+                    shares: 0,
+                    bookmarks: [],
+                    time: 'Just now'
+                };
+                db.posts.unshift(newPost);
+                saveDB('posts', newPost);
+                uploadedGalleryImages = [];
+                render();
+                showToast('Post published globally!', 'success');
+            });
+        }
+
+        function toggleLikePost(postId) {
+            const post = db.posts.find(p => p.id === postId);
+            if(post) {
+                if(post.likes.includes(session.id)) post.likes = post.likes.filter(id => id !== session.id);
+                else {
+                    post.likes.push(session.id);
+                    if(post.authorId !== session.id) {
+                        const notif = { id: 'n_' + Date.now(), userId: post.authorId, text: `${session.name} liked your post.`, read: false, time: 'Just now' };
+                        db.notifications.push(notif);
+                        saveDB('notifications', notif);
+                    }
+                }
+                saveDB('posts', post);
+                render();
+            }
+        }
+
+        function addComment(postId) {
+            const input = document.getElementById(`comment-input-${postId}`);
+            const text = input ? input.value.trim() : '';
+            if(!text) return;
+            const post = db.posts.find(p => p.id === postId);
+            if(post) {
+                post.comments.push({ id: 'c_' + Date.now(), authorId: session.id, text, time: 'Just now' });
+                saveDB('posts', post);
+                render();
+            }
+        }
+
+        function deletePost(postId) {
+            const target = db.posts.find(p => p.id === postId);
+            db.posts = db.posts.filter(p => p.id !== postId);
+            saveDB('posts', target, true);
+            render();
+            showToast('Post deleted');
+        }
+        function sharePost(postId) {
+            const post = db.posts.find(p => p.id === postId);
+            if(post) { post.shares++; saveDB('posts', post); render(); showToast('Post shared!', 'success'); }
+        }
+        async function installPWA() {
+            if (deferredInstallPrompt) {
+                deferredInstallPrompt.prompt();
+                const choiceResult = await deferredInstallPrompt.userChoice;
+                if (choiceResult.outcome === 'accepted') {
+                    showToast('ChatNova Ultimate installed with your official logo!', 'success');
+                }
+                deferredInstallPrompt = null;
+            } else {
+                showToast('Tap your browser menu (⋮ or Share) -> "Add to Home Screen" / "Install App" to install ChatNova with your official logo!', 'success');
+            }
+        }
+        function viewUserProfile(id) {
+            selectChatUser(id);
+            switchTab('chat');
+        }
+
+
+        /* BUSINESS VERIFICATION: secure API-backed workflow */
+        const VERIFICATION_API = (window.CHATNOVA_VERIFICATION_API || '/api').replace(/\/$/, '');
+        const vTokenKey = 'cn_verification_token', vUserKey = 'cn_verification_user';
+        let verificationAuthMode = 'register';
+        const vToken = () => localStorage.getItem(vTokenKey) || '';
+        const vUser = () => { try { return JSON.parse(localStorage.getItem(vUserKey)||'null'); } catch { return null; } };
+        const vEsc = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        async function vApi(path, options={}) {
+            const headers={...(options.headers||{})};
+            if(vToken()) headers.Authorization='Bearer '+vToken();
+            if(options.body && !(options.body instanceof FormData)) headers['Content-Type']='application/json';
+            const r=await fetch(VERIFICATION_API+path,{...options,headers});
+            const d=await r.json().catch(()=>({}));
+            if(!r.ok) throw new Error(d.error||'Request failed');
+            return d;
+        }
+        function renderBusinessVerificationTab() {
+            const u=vUser();
+            if(!u || !vToken()) return `<div class="max-w-2xl mx-auto bg-white dark:bg-slate-800 rounded-2xl p-6 border dark:border-slate-700 space-y-4">
+              <div class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl p-5"><h2 class="text-2xl font-bold">Business Verification</h2><p class="text-sm text-blue-100">Apply for the blue badge after administrator review.</p></div>
+              <div class="flex gap-2"><button onclick="verificationAuthMode='register';render()" class="flex-1 rounded-lg p-2 text-sm ${verificationAuthMode==='register'?'bg-blue-600 text-white':'bg-slate-100 dark:bg-slate-700'}">Create account</button><button onclick="verificationAuthMode='login';render()" class="flex-1 rounded-lg p-2 text-sm ${verificationAuthMode==='login'?'bg-blue-600 text-white':'bg-slate-100 dark:bg-slate-700'}">Sign in</button></div>
+              <form id="v-auth-form" class="space-y-3">
+              ${verificationAuthMode==='register'?'<input id="v-name" required maxlength="100" placeholder="Full name" class="w-full rounded-lg border p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">':''}
+              <input id="v-email" type="email" required placeholder="Email address" class="w-full rounded-lg border p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">
+              <input id="v-password" type="password" required minlength="10" placeholder="Password (at least 10 characters)" class="w-full rounded-lg border p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">
+              <button class="w-full bg-blue-600 text-white rounded-lg py-3 font-semibold">${verificationAuthMode==='register'?'Create verification account':'Sign in'}</button></form>
+              <p class="text-xs text-slate-500">This uses a separate secure verification account. The current ChatNova login is browser-based and is not trusted by the verification backend.</p></div>`;
+            if(u.role==='admin') return `<div class="space-y-4"><div class="bg-blue-700 text-white rounded-2xl p-5 flex justify-between"><div><h2 class="text-2xl font-bold">Verification Admin</h2><p class="text-sm text-blue-100">Review business applications</p></div><button onclick="vLogout()" class="bg-white/20 px-3 rounded-lg">Sign out</button></div><div id="v-admin-list" class="bg-white dark:bg-slate-800 rounded-2xl p-5 border dark:border-slate-700">Loading…</div></div>`;
+            return `<div class="max-w-3xl mx-auto space-y-4"><div class="bg-blue-700 text-white rounded-2xl p-5 flex justify-between"><div><h2 class="text-2xl font-bold">Business Verification</h2><p class="text-sm text-blue-100">Signed in as ${vEsc(u.email)}</p></div><button onclick="vLogout()" class="bg-white/20 px-3 rounded-lg">Sign out</button></div><div id="v-user-panel" class="bg-white dark:bg-slate-800 rounded-2xl p-5 border dark:border-slate-700">Loading…</div></div>`;
+        }
+        async function vLoad() {
+          const u=vUser(); if(!u) return;
+          try {
+            if(u.role==='admin') {
+              const d=await vApi('/admin/applications'), el=document.getElementById('v-admin-list'); if(!el)return;
+              el.innerHTML='<h3 class="font-bold mb-4">Applications ('+d.applications.length+')</h3>'+(d.applications.length?d.applications.map(a=>`<article class="border dark:border-slate-700 rounded-xl p-4 mb-3"><div class="flex justify-between gap-2"><b>${vEsc(a.businessName)}</b><span class="text-xs font-bold text-blue-600">${vEsc(a.status)}</span></div><p class="text-xs text-slate-500">${vEsc(a.ownerName)} · ${vEsc(a.email)} · ${vEsc(a.country)}</p><p class="text-sm my-3">${vEsc(a.description)}</p><p class="text-xs text-slate-500">Reg: ${vEsc(a.registrationNumber||'—')} · ${vEsc(a.website||'')}</p><div class="flex flex-wrap gap-2 mt-3">${a.hasDocument?`<button onclick="vDocument('${a.id}')" class="bg-slate-100 dark:bg-slate-700 px-3 py-2 rounded text-xs">View document</button>`:''}<button onclick="vDecision('${a.id}','approved')" class="bg-blue-600 text-white px-3 py-2 rounded text-xs">Approve & verify</button><button onclick="vDecision('${a.id}','rejected')" class="bg-red-600 text-white px-3 py-2 rounded text-xs">Reject</button><button onclick="vDecision('${a.id}','needs_info')" class="bg-amber-100 text-amber-800 px-3 py-2 rounded text-xs">Request info</button></div></article>`).join(''):'<p class="text-sm text-slate-500">No applications yet.</p>');
+            } else {
+              const d=await vApi('/applications/me'), el=document.getElementById('v-user-panel'); if(!el)return;
+              if(d.application){const a=d.application;el.innerHTML=`<h3 class="font-bold mb-3">Your application</h3><span class="rounded-full bg-blue-50 text-blue-700 px-3 py-1 text-xs font-bold">${vEsc(a.status)}</span>${a.status==='approved'?'<span class="ml-2 text-blue-600 font-bold"><i class="fa-solid fa-circle-check"></i> Verified by ChatNova</span>':''}<h4 class="font-semibold mt-4">${vEsc(a.businessName)}</h4><p class="text-sm text-slate-500">${vEsc(a.description)}</p><p class="text-xs text-slate-500 mt-3">Submitted ${new Date(a.createdAt).toLocaleString()}</p>${a.reviewNote?'<p class="bg-slate-50 dark:bg-slate-900 p-3 rounded mt-3 text-sm">Admin note: '+vEsc(a.reviewNote)+'</p>':''}`;
+              } else {el.innerHTML=`<h3 class="font-bold text-lg mb-1">Apply for a blue verified badge</h3><p class="text-sm text-slate-500 mb-4">All applications are reviewed by an administrator.</p><form id="v-application" class="space-y-3">
+                <input name="businessName" required maxlength="140" placeholder="Business name *" class="w-full border rounded-lg p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">
+                <input name="ownerName" required maxlength="100" placeholder="Owner / representative name *" class="w-full border rounded-lg p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">
+                <input name="email" type="email" required maxlength="254" placeholder="Business email *" class="w-full border rounded-lg p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">
+                <input name="country" required maxlength="80" value="Rwanda" placeholder="Country *" class="w-full border rounded-lg p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">
+                <textarea name="description" required minlength="30" maxlength="1500" rows="4" placeholder="Business description (at least 30 characters) *" class="w-full border rounded-lg p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600"></textarea>
+                <input name="registrationNumber" maxlength="100" placeholder="Business registration number (optional)" class="w-full border rounded-lg p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">
+                <input name="website" type="url" maxlength="300" placeholder="Website URL (optional, include https://)" class="w-full border rounded-lg p-3 bg-slate-50 dark:bg-slate-900 dark:border-slate-600">
+                <label class="block text-xs font-semibold">Supporting document (PDF, JPG or PNG; max 5 MB) *</label><input name="document" type="file" required accept=".pdf,.jpg,.jpeg,.png" class="w-full text-sm">
+                <label class="flex gap-2 text-xs text-slate-500"><input name="consent" type="checkbox" required> I confirm that these details are accurate and authorize document review.</label>
+                <button class="w-full bg-blue-600 text-white rounded-lg py-3 font-semibold">Submit application</button></form>`;}
+            }
+          } catch(e){const el=document.getElementById(u.role==='admin'?'v-admin-list':'v-user-panel');if(el)el.innerHTML='<p class="text-red-600 text-sm">'+vEsc(e.message)+'</p><button onclick="vLoad()" class="text-blue-600 text-sm mt-2">Retry</button>';}
+        }
+        async function vDocument(id){try{const r=await fetch(`${VERIFICATION_API}/admin/applications/${id}/document`,{headers:{Authorization:'Bearer '+vToken()}});if(!r.ok)throw Error('Document unavailable');const url=URL.createObjectURL(await r.blob());window.open(url,'_blank','noopener');setTimeout(()=>URL.revokeObjectURL(url),60000);}catch(e){showToast(e.message,'error');}}
+        async function vDecision(id,status){const reviewNote=prompt('Optional note for the applicant:')||'';try{await vApi('/admin/applications/'+encodeURIComponent(id)+'/decision',{method:'PATCH',body:JSON.stringify({status,reviewNote})});showToast('Decision saved','success');vLoad();}catch(e){showToast(e.message,'error');}}
+        async function vLogout(){try{await vApi('/auth/logout',{method:'POST'});}catch{}localStorage.removeItem(vTokenKey);localStorage.removeItem(vUserKey);render();}
+        function attachVerificationEvents(){
+          document.getElementById('v-auth-form')?.addEventListener('submit',async e=>{e.preventDefault();try{const body={email:document.getElementById('v-email').value.trim(),password:document.getElementById('v-password').value};if(verificationAuthMode==='register')body.name=document.getElementById('v-name').value.trim();const d=await vApi(verificationAuthMode==='register'?'/auth/register':'/auth/login',{method:'POST',body:JSON.stringify(body)});localStorage.setItem(vTokenKey,d.token);localStorage.setItem(vUserKey,JSON.stringify(d.user));render();vLoad();}catch(err){showToast(err.message,'error');}});
+          document.getElementById('v-application')?.addEventListener('submit',async e=>{e.preventDefault();try{await vApi('/applications',{method:'POST',body:new FormData(e.currentTarget)});showToast('Application submitted for admin review','success');render();vLoad();}catch(err){showToast(err.message,'error');}});
+        }
+
+        // Initialize Application
+        window.onload = async function() {
+            await setupPWAManifest();
+            await initIndexedDB();
+            render();
+        };
+    </script>
+</body>
+</html>
